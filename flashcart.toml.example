@@ -1,0 +1,25 @@
+# flashcart — copy to /userdata/system/flashcart/flashcart.toml on the Batocera box.
+
+[nas]
+host = "10.132.1.25"
+# port = 2049
+# mount_root = "/var/run/flashcart/nas"
+
+[server]
+listen = ":8474"
+
+[trees.roms]
+export = "/volume2/retrogaming/roms"
+local = "/userdata/roms"
+
+[trees.bios]
+export = "/volume2/retrogaming/bios"
+local = "/userdata/bios"
+
+[trees.saves]
+export = "/volume2/retrogaming/saves"
+local = "/userdata/saves"
+
+# Refuse to sync if the plan would leave less than this percentage of the
+# filesystem free.
+# space_margin_percent = 10
