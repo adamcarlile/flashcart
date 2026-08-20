@@ -1,0 +1,791 @@
+<title>flashcart</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=JetBrains+Mono:wght@400;500;700&family=Public+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --bg:        #F1F1F6;
+  --surface:   #FFFFFF;
+  --surface-2: #E8E8F0;
+  --line:      #D6D6E2;
+  --line-soft: #E4E4EE;
+  --text:      #16171F;
+  --dim:       #64667A;
+  --faint:     #8E90A4;
+  --accent:    #4A52B8;
+  --accent-ink:#FFFFFF;
+  --accent-soft:rgba(74,82,184,.10);
+  --ok:        #2E7D53;
+  --ok-soft:   rgba(46,125,83,.12);
+  --warn:      #98600F;
+  --warn-soft: rgba(152,96,15,.12);
+  --danger:    #A9332A;
+  --danger-soft:rgba(169,51,42,.10);
+  --shadow:    0 1px 2px rgba(22,23,31,.06), 0 8px 24px -12px rgba(22,23,31,.18);
+
+  --display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --ui:      "Public Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #0E1016;
+    --surface:   #161923;
+    --surface-2: #1D212D;
+    --line:      #2A2F3E;
+    --line-soft: #222634;
+    --text:      #E9EAF1;
+    --dim:       #949AAC;
+    --faint:     #6E7488;
+    --accent:    #8B93F0;
+    --accent-ink:#12141C;
+    --accent-soft:rgba(139,147,240,.14);
+    --ok:        #5FB97F;
+    --ok-soft:   rgba(95,185,127,.14);
+    --warn:      #D9A155;
+    --warn-soft: rgba(217,161,85,.14);
+    --danger:    #E0736A;
+    --danger-soft:rgba(224,115,106,.13);
+    --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #0E1016;
+  --surface:   #161923;
+  --surface-2: #1D212D;
+  --line:      #2A2F3E;
+  --line-soft: #222634;
+  --text:      #E9EAF1;
+  --dim:       #949AAC;
+  --faint:     #6E7488;
+  --accent:    #8B93F0;
+  --accent-ink:#12141C;
+  --accent-soft:rgba(139,147,240,.14);
+  --ok:        #5FB97F;
+  --ok-soft:   rgba(95,185,127,.14);
+  --warn:      #D9A155;
+  --warn-soft: rgba(217,161,85,.14);
+  --danger:    #E0736A;
+  --danger-soft:rgba(224,115,106,.13);
+  --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ─── mockup chrome, not part of the product ─────────────────── */
+
+.mock {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  padding: .7rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: .9rem;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.mock-tag {
+  font-family: var(--mono);
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+  padding: .2rem .45rem;
+  white-space: nowrap;
+}
+.mock-states { display: flex; gap: .3rem; flex-wrap: wrap; }
+.mock-states button {
+  font-family: var(--mono);
+  font-size: .72rem;
+  font-weight: 500;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: .28rem .6rem;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.mock-states button:hover { color: var(--text); border-color: var(--faint); }
+.mock-states button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ─── app shell ──────────────────────────────────────────────── */
+
+.app {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+header { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+
+.wordmark {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.7rem;
+  letter-spacing: -.02em;
+  margin: 0;
+  line-height: 1;
+}
+.tagline {
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--faint);
+  letter-spacing: .04em;
+  margin-top: .4rem;
+}
+
+.head-right { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-family: var(--mono);
+  font-size: .72rem;
+  font-weight: 500;
+  padding: .3rem .6rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.pill.ok     { color: var(--ok);     background: var(--ok-soft);     border-color: var(--ok-soft); }
+.pill.bad    { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
+
+.stamp {
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--faint);
+  text-align: right;
+}
+
+/* ─── banner ─────────────────────────────────────────────────── */
+
+.banner {
+  display: flex;
+  gap: .75rem;
+  align-items: flex-start;
+  padding: .8rem 1rem;
+  border-radius: 6px;
+  border-left: 3px solid;
+  font-size: .875rem;
+}
+.banner strong { font-family: var(--mono); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; }
+.banner.bad  { color: var(--danger); background: var(--danger-soft); border-left-color: var(--danger); }
+.banner.warn { color: var(--warn);   background: var(--warn-soft);   border-left-color: var(--warn); }
+
+/* ─── tree manifest ──────────────────────────────────────────── */
+
+.trees { display: grid; gap: 1rem; grid-template-columns: 1.4fr 1fr 1fr; }
+@media (max-width: 46rem) { .trees { grid-template-columns: 1fr; } }
+
+.tree {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+  box-shadow: var(--shadow);
+}
+
+.tree-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.tree-name { font-family: var(--display); font-weight: 700; font-size: 1.05rem; letter-spacing: -.01em; }
+.tree-tag {
+  font-family: var(--mono);
+  font-size: .58rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: .18rem .4rem;
+  border-radius: 3px;
+}
+
+.flows { display: flex; flex-direction: column; gap: .5rem; }
+
+.flow { display: grid; grid-template-columns: 1.1rem 1fr auto; align-items: baseline; gap: .55rem; }
+.flow-arrow { font-family: var(--mono); font-weight: 700; font-size: .95rem; line-height: 1; }
+.flow-arrow.in  { color: var(--accent); }
+.flow-arrow.out { color: var(--ok); }
+.flow-label { font-size: .8rem; color: var(--dim); }
+.flow-label b { display: block; color: var(--text); font-weight: 600; font-size: .82rem; }
+.flow-val {
+  font-family: var(--mono);
+  font-size: .8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.flow-val span { display: block; color: var(--faint); font-size: .68rem; }
+.flow.nil .flow-val, .flow.nil .flow-label { color: var(--faint); }
+.flow.nil .flow-arrow { color: var(--faint); opacity: .5; }
+
+.tree-foot {
+  border-top: 1px solid var(--line-soft);
+  padding-top: .6rem;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--faint);
+}
+.tree-foot .drifted { color: var(--danger); font-weight: 700; }
+
+/* ─── actions ────────────────────────────────────────────────── */
+
+.actions { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+
+button.act {
+  font-family: var(--ui);
+  font-size: .9rem;
+  font-weight: 600;
+  padding: .6rem 1.35rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background .12s, border-color .12s, opacity .12s;
+}
+button.act:hover:not(:disabled) { border-color: var(--faint); }
+button.act.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.act.primary:hover:not(:disabled) { filter: brightness(1.08); }
+button.act.danger  { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.act:disabled { opacity: .38; cursor: not-allowed; }
+
+.act-note { font-family: var(--mono); font-size: .72rem; color: var(--faint); }
+
+/* ─── passes ─────────────────────────────────────────────────── */
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: .7rem;
+  margin-bottom: .8rem;
+}
+.section-head h2 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1rem;
+  margin: 0;
+  letter-spacing: -.01em;
+}
+.section-head .hint { font-family: var(--mono); font-size: .68rem; color: var(--faint); }
+
+.passes {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.pass {
+  display: grid;
+  grid-template-columns: 1.3rem 1fr 7rem 3rem;
+  align-items: center;
+  gap: .75rem;
+  padding: .65rem 1rem;
+  border-bottom: 1px solid var(--line-soft);
+  position: relative;
+}
+.pass:last-child { border-bottom: 0; }
+
+.pass-n {
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.pass-name { font-size: .85rem; display: flex; align-items: center; gap: .5rem; }
+.pass-name .dir { font-family: var(--mono); font-weight: 700; font-size: .8rem; }
+.pass-name .dir.in { color: var(--accent); }
+.pass-name .dir.out { color: var(--ok); }
+
+.track { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.fill { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .35s ease; }
+.pass.done .fill { background: var(--ok); }
+.pass.failed .fill { background: var(--danger); }
+
+.pass-state {
+  font-family: var(--mono);
+  font-size: .7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--faint);
+}
+.pass.done .pass-state { color: var(--ok); }
+.pass.failed .pass-state { color: var(--danger); font-weight: 700; }
+.pass.idle { opacity: .45; }
+
+.pass-err {
+  grid-column: 2 / -1;
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--danger);
+  background: var(--danger-soft);
+  padding: .4rem .55rem;
+  border-radius: 4px;
+  margin-top: .4rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* ─── drift quarantine ───────────────────────────────────────── */
+
+.drift {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.drift-head {
+  background: var(--danger-soft);
+  padding: .85rem 1rem;
+  border-bottom: 1px solid var(--danger);
+}
+.drift-head h2 {
+  font-family: var(--display);
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 .2rem;
+  color: var(--danger);
+  letter-spacing: -.01em;
+}
+.drift-head p { margin: 0; font-size: .8rem; color: var(--dim); }
+
+.drift-rows { display: flex; flex-direction: column; }
+
+.drift-row {
+  display: grid;
+  grid-template-columns: auto 3.6rem 1fr;
+  align-items: center;
+  gap: .7rem;
+  padding: .5rem 1rem;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+  font-size: .8rem;
+}
+.drift-row:last-child { border-bottom: 0; }
+.drift-row:hover { background: var(--surface-2); }
+.drift-row input { accent-color: var(--danger); width: 15px; height: 15px; cursor: pointer; }
+
+.side {
+  font-family: var(--mono);
+  font-size: .58rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-align: center;
+  padding: .16rem 0;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+.side.nas { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+
+.drift-path {
+  font-family: var(--mono);
+  font-size: .76rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.drift-foot { padding: .85rem 1rem; display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+
+/* ─── log ────────────────────────────────────────────────────── */
+
+.log {
+  font-family: var(--mono);
+  font-size: .72rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .75rem 1rem;
+  max-height: 11rem;
+  overflow: auto;
+  color: var(--dim);
+  white-space: pre-wrap;
+}
+.log .t { color: var(--faint); }
+.log .e { color: var(--danger); }
+.log .g { color: var(--ok); }
+
+.empty {
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--faint);
+  text-align: center;
+  padding: 2.5rem 1rem;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+
+[hidden] { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="mock">
+  <span class="mock-tag">Mockup</span>
+  <div class="mock-states" id="states"></div>
+</div>
+
+<div class="app">
+  <header>
+    <div>
+      <h1 class="wordmark">flashcart</h1>
+      <div class="tagline">BATOCERA · 10.132.1.151</div>
+    </div>
+    <div class="head-right">
+      <span class="pill" id="nas-pill"></span>
+      <div class="stamp">
+        <div id="last-sync"></div>
+        <div style="color:var(--faint)">v0.1.0</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <section>
+    <div class="section-head">
+      <h2>Manifest</h2>
+      <span class="hint">↓ from NAS · ↑ to NAS</span>
+    </div>
+    <div class="trees" id="trees"></div>
+  </section>
+
+  <div class="actions">
+    <button class="act primary" id="plan-btn">Plan</button>
+    <button class="act" id="sync-btn">Sync</button>
+    <span class="act-note" id="act-note"></span>
+  </div>
+
+  <section id="passes-section">
+    <div class="section-head">
+      <h2>Passes</h2>
+      <span class="hint">metadata is pulled before it is pushed, so an empty box is seeded</span>
+    </div>
+    <div class="passes" id="passes"></div>
+  </section>
+
+  <section id="drift-section" hidden>
+    <div class="drift">
+      <div class="drift-head">
+        <h2 id="drift-title">Drift</h2>
+        <p>Present on the destination, absent from the source. Deletion is permanent and only ticked rows are removed.</p>
+      </div>
+      <div class="drift-rows" id="drift-rows"></div>
+      <div class="drift-foot">
+        <button class="act danger" id="drift-btn" disabled>Delete ticked</button>
+        <span class="act-note" id="drift-note">Nothing ticked</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Log</h2></div>
+    <div class="log" id="log"></div>
+  </section>
+</div>
+
+<script>
+const PASSES = [
+  { n: 1, name: "BIOS",           dir: "in",  tree: "bios"  },
+  { n: 2, name: "ROM content",    dir: "in",  tree: "roms"  },
+  { n: 3, name: "Metadata seed",  dir: "in",  tree: "roms"  },
+  { n: 4, name: "Metadata",       dir: "out", tree: "roms"  },
+  { n: 5, name: "Saves",          dir: "out", tree: "saves" },
+];
+
+const blank = { roms: null, bios: null, saves: null };
+
+const SCENARIOS = {
+  offline: {
+    label: "offline",
+    reachable: false,
+    banner: ["bad", "NAS unreachable", "Nothing to do until you are home. The library on this box is complete and playable."],
+    lastSync: "3 days ago",
+    trees: blank,
+    log: [["t", "10.132.1.25:2049 — no route to host"]],
+  },
+  idle: {
+    label: "idle",
+    reachable: true,
+    lastSync: "3 days ago",
+    trees: blank,
+    note: "Plan first to see what would move.",
+    log: [["t", "NAS reachable"]],
+  },
+  steady: {
+    label: "steady",
+    reachable: true,
+    lastSync: "3 days ago",
+    trees: {
+      roms:  { in: { files: 2, bytes: "4.0 GB", label: "content", sub: "ROM binaries" },
+               out:{ files: 2, bytes: "729 KB", label: "metadata", sub: "gamelists, media" }, drift: 0 },
+      bios:  { in: { files: 0, bytes: "—" }, drift: 0 },
+      saves: { out:{ files: 1, bytes: "32 KB" }, drift: 0 },
+    },
+    log: [["t","NAS reachable"],["t","planning…"],["g","plan complete — 4.0 GB in, 761 KB out, no drift"]],
+  },
+  seed: {
+    label: "seed",
+    reachable: true,
+    lastSync: null,
+    banner: ["warn", "First run", "The local tree is empty. This will pull the whole library, roughly 30 to 60 minutes."],
+    trees: {
+      roms:  { in: { files: 1023, bytes: "91.6 GB", label: "content", sub: "ROM binaries" },
+               out:{ files: 0, bytes: "—", label: "metadata", sub: "gamelists, media" }, drift: 0 },
+      bios:  { in: { files: 412, bytes: "579 MB" }, drift: 0 },
+      saves: { out:{ files: 0, bytes: "—" }, drift: 0 },
+    },
+    note: "92.2 GB incoming · 433 GB free",
+    log: [["t","NAS reachable"],["t","planning…"],["g","plan complete — 92.2 GB in, zero drift"]],
+  },
+  syncing: {
+    label: "syncing",
+    reachable: true,
+    lastSync: "3 days ago",
+    busy: true,
+    trees: {
+      roms:  { in: { files: 1023, bytes: "91.6 GB", label: "content", sub: "ROM binaries" },
+               out:{ files: 24, bytes: "1.6 MB", label: "metadata", sub: "gamelists, media" }, drift: 0 },
+      bios:  { in: { files: 412, bytes: "579 MB" }, drift: 0 },
+      saves: { out:{ files: 3, bytes: "96 KB" }, drift: 0 },
+    },
+    progress: { 1: "done", 2: 47, 3: "idle", 4: "idle", 5: "idle" },
+    log: [["t","sync started"],["g","BIOS: ok"],["t","ROM content: 43.0 GB / 91.6 GB"]],
+  },
+  failed: {
+    label: "failed",
+    reachable: true,
+    lastSync: "3 days ago",
+    banner: ["bad", "Sync failed", "Remaining passes were abandoned. Nothing was deleted. The NAS was unmounted."],
+    trees: {
+      roms:  { in: { files: 1023, bytes: "91.6 GB", label: "content", sub: "ROM binaries" },
+               out:{ files: 24, bytes: "1.6 MB", label: "metadata", sub: "gamelists, media" }, drift: 0 },
+      bios:  { in: { files: 412, bytes: "579 MB" }, drift: 0 },
+      saves: { out:{ files: 3, bytes: "96 KB" }, drift: 0 },
+    },
+    progress: { 1: "done", 2: "failed", 3: "idle", 4: "idle", 5: "idle" },
+    err: 'rsync roms-content-pull: exit status 23\nrsync: [receiver] write failed on "ps3/God of War Collection.ps3/USRDIR/EBOOT.BIN": No space left on device (28)',
+    log: [["t","sync started"],["g","BIOS: ok"],["e","ROM content: FAILED — exit status 23"],["e","sync failed"]],
+  },
+  drift: {
+    label: "drift",
+    reachable: true,
+    lastSync: "1 hour ago",
+    trees: {
+      roms:  { in: { files: 0, bytes: "—", label: "content", sub: "ROM binaries" },
+               out:{ files: 0, bytes: "—", label: "metadata", sub: "gamelists, media" }, drift: 3 },
+      bios:  { in: { files: 0, bytes: "—" }, drift: 1 },
+      saves: { out:{ files: 0, bytes: "—" }, drift: 1 },
+    },
+    drift: [
+      { side: "local", tree: "bios",  rel: "stray-bios-file.bin" },
+      { side: "local", tree: "roms",  rel: "snes/Removed From NAS (USA).zip" },
+      { side: "local", tree: "roms",  rel: "ps2/Old Import (Japan).iso" },
+      { side: "nas",   tree: "roms",  rel: "dreamcast/images/Deleted Game-image.png" },
+      { side: "nas",   tree: "saves", rel: "psx/Retired Save.mcd" },
+    ],
+    log: [["t","planning…"],["g","plan complete — nothing to transfer, 5 drifted paths"]],
+  },
+  nospace: {
+    label: "no space",
+    reachable: true,
+    lastSync: "3 days ago",
+    banner: ["bad", "Not enough space",
+      "91.6 GB incoming against 4.0 GB free would leave -87.6 GB, below the 10% margin of 45.9 GB. Free some space, or remove a system from the NAS."],
+    trees: {
+      roms:  { in: { files: 1023, bytes: "91.6 GB", label: "content", sub: "ROM binaries" },
+               out:{ files: 0, bytes: "—", label: "metadata", sub: "gamelists, media" }, drift: 0 },
+      bios:  { in: { files: 0, bytes: "—" }, drift: 0 },
+      saves: { out:{ files: 0, bytes: "—" }, drift: 0 },
+    },
+    blocked: true,
+    log: [["t","planning…"],["e","plan refused — insufficient space"]],
+  },
+};
+
+const TREE_META = {
+  roms:  { name: "ROMs",  tag: "split" },
+  bios:  { name: "BIOS",  tag: "pull"  },
+  saves: { name: "Saves", tag: "push"  },
+};
+
+const $ = (id) => document.getElementById(id);
+let current = "steady";
+
+function flowRow(kind, f, fallbackLabel) {
+  const nil = !f || !f.files;
+  const arrow = kind === "in" ? "↓" : "↑";
+  const label = (f && f.label) || fallbackLabel;
+  const sub = f && f.sub ? `<b>${label}</b>${f.sub}` : `<b>${label}</b>`;
+  const files = nil ? "—" : `${f.files.toLocaleString()} files`;
+  const bytes = nil ? "" : `<span>${f.bytes}</span>`;
+  return `<div class="flow ${nil ? "nil" : ""}">
+    <span class="flow-arrow ${kind}">${arrow}</span>
+    <span class="flow-label">${sub}</span>
+    <span class="flow-val">${files}${bytes}</span>
+  </div>`;
+}
+
+function renderTrees(s) {
+  $("trees").innerHTML = Object.keys(TREE_META).map((key) => {
+    const meta = TREE_META[key];
+    const t = s.trees && s.trees[key];
+    let flows = "";
+    if (!t) {
+      flows = `<div class="flow nil"><span class="flow-arrow in">·</span>
+        <span class="flow-label"><b>not planned</b></span><span class="flow-val">—</span></div>`;
+    } else {
+      if (t.in)  flows += flowRow("in", t.in, "incoming");
+      if (t.out) flows += flowRow("out", t.out, "outgoing");
+    }
+    const drift = t && t.drift
+      ? `<span class="drifted">${t.drift} drifted</span>`
+      : `<span>${t ? "no drift" : "—"}</span>`;
+    return `<div class="tree">
+      <div class="tree-head">
+        <span class="tree-name">${meta.name}</span>
+        <span class="tree-tag">${meta.tag}</span>
+      </div>
+      <div class="flows">${flows}</div>
+      <div class="tree-foot"><span>/userdata/${key}</span>${drift}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderPasses(s) {
+  const prog = s.progress || {};
+  $("passes").innerHTML = PASSES.map((p) => {
+    const v = prog[p.n];
+    let cls = "idle", pct = 0, state = "waiting";
+    if (v === "done")        { cls = "done";   pct = 100; state = "done"; }
+    else if (v === "failed") { cls = "failed"; pct = 100; state = "failed"; }
+    else if (typeof v === "number") { cls = "running"; pct = v; state = v + "%"; }
+    else if (!s.progress)    { cls = "idle";   state = "—"; }
+
+    const err = (v === "failed" && s.err)
+      ? `<div class="pass-err">${s.err}</div>` : "";
+
+    return `<div class="pass ${cls}">
+      <span class="pass-n">${p.n}</span>
+      <span class="pass-name"><span class="dir ${p.dir}">${p.dir === "in" ? "↓" : "↑"}</span>${p.name}</span>
+      <span class="track"><span class="fill" style="width:${pct}%"></span></span>
+      <span class="pass-state">${state}</span>
+      ${err}
+    </div>`;
+  }).join("");
+}
+
+function renderDrift(s) {
+  const items = s.drift || [];
+  $("drift-section").hidden = !items.length;
+  if (!items.length) return;
+
+  $("drift-title").textContent = `Drift — ${items.length} paths`;
+  $("drift-rows").innerHTML = items.map((d, i) => `
+    <label class="drift-row">
+      <input type="checkbox" data-i="${i}">
+      <span class="side ${d.side}">${d.side.toUpperCase()}</span>
+      <span class="drift-path">${d.tree}/${d.rel}</span>
+    </label>`).join("");
+
+  const boxes = () => [...$("drift-rows").querySelectorAll("input")];
+  const update = () => {
+    const n = boxes().filter((b) => b.checked).length;
+    $("drift-btn").disabled = n === 0;
+    $("drift-note").textContent = n === 0
+      ? "Nothing ticked"
+      : `${n} path${n === 1 ? "" : "s"} will be permanently deleted`;
+  };
+  boxes().forEach((b) => b.addEventListener("change", update));
+  update();
+}
+
+function renderLog(s) {
+  $("log").innerHTML = (s.log || []).map(([k, t]) => `<div class="${k}">${t}</div>`).join("");
+}
+
+function render(key) {
+  current = key;
+  const s = SCENARIOS[key];
+
+  [...$("states").children].forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.key === key)));
+
+  const pill = $("nas-pill");
+  pill.className = "pill " + (s.reachable ? "ok" : "bad");
+  pill.textContent = s.reachable ? "NAS reachable" : "NAS unreachable";
+
+  $("last-sync").textContent = s.lastSync ? "Last sync " + s.lastSync : "Never synced";
+
+  const banner = $("banner");
+  if (s.banner) {
+    banner.hidden = false;
+    banner.className = "banner " + s.banner[0];
+    banner.innerHTML = `<strong>${s.banner[1]}</strong><span>${s.banner[2]}</span>`;
+  } else {
+    banner.hidden = true;
+  }
+
+  renderTrees(s);
+  renderPasses(s);
+  renderDrift(s);
+  renderLog(s);
+
+  const blocked = !s.reachable || s.busy || s.blocked;
+  $("plan-btn").disabled = !s.reachable || s.busy;
+  $("sync-btn").disabled = blocked;
+  $("act-note").textContent = s.busy
+    ? "Sync in progress — plan and sync are locked"
+    : (s.note || "");
+}
+
+$("states").innerHTML = Object.entries(SCENARIOS)
+  .map(([k, v]) => `<button data-key="${k}" aria-pressed="false">${v.label}</button>`).join("");
+$("states").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) render(b.dataset.key);
+});
+
+render(current);
+</script>

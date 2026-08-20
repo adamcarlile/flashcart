@@ -2031,7 +2031,7 @@ The subtle part. On a first run the local tree is empty, so pass 4's dry run wou
 
 **Interfaces:**
 - Consumes: `config.Config` (Task 1), `pass.Pass`, `pass.Passes` (Task 4), `runner.Runner`, `runner.Result` (Task 5)
-- Produces: `plan.DriftItem{Tree, Side, Rel string}`, `plan.TreePlan{Tree, Label string, IncomingFiles int, IncomingBytes int64, OutgoingFiles int, OutgoingBytes int64, Drift []DriftItem}`, `plan.Plan{Trees []TreePlan, RequiredBytes, FreeBytes, TotalBytes int64, Sufficient bool, Message string}`, `plan.FreeSpaceFunc func(path string) (free, total int64, err error)`, `func plan.Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.Pass, free plan.FreeSpaceFunc) (plan.Plan, error)`, `func plan.FreeSpace(path string) (int64, int64, error)`, `const plan.SideLocal`, `const plan.SideNAS`
+- Produces: `plan.DriftItem{Tree, Side, Rel string}`, `plan.PassSummary{ID, Label, Direction string, Files int, Bytes int64}`, `plan.TreePlan{Tree, Label string, IncomingFiles int, IncomingBytes int64, OutgoingFiles int, OutgoingBytes int64, Passes []PassSummary, Drift []DriftItem}`, `plan.Plan{Trees []TreePlan, RequiredBytes, FreeBytes, TotalBytes int64, Sufficient bool, Message string}`, `plan.FreeSpaceFunc func(path string) (free, total int64, err error)`, `func plan.Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.Pass, free plan.FreeSpaceFunc) (plan.Plan, error)`, `func plan.FreeSpace(path string) (int64, int64, error)`, `const plan.SideLocal`, `const plan.SideNAS`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2204,6 +2204,46 @@ func TestIncomingAndOutgoingBytesAreSeparated(t *testing.T) {
 	}
 }
 
+// The UI renders one row per pass, so each tree must carry its passes with
+// their own direction and figures rather than a single netted-out total.
+func TestTreeCarriesPerPassBreakdown(t *testing.T) {
+	r := stubRunner{results: map[string]runner.Result{
+		"roms-content-pull": {
+			Changes:       []runner.Change{{Itemize: ">f+++++++++", Size: 1000, Path: "snes/New.zip"}},
+			TransferBytes: 1000,
+		},
+		"roms-metadata-push": {
+			Changes:       []runner.Change{{Itemize: ">f.st......", Size: 40, Path: "snes/gamelist.xml"}},
+			TransferBytes: 40,
+		},
+	}}
+	p, err := Build(context.Background(), testCfg(), r, testPasses(), plentyOfSpace)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, tp := range p.Trees {
+		if tp.Tree != "roms" {
+			continue
+		}
+		if len(tp.Passes) != 3 {
+			t.Fatalf("roms carries %d passes, want 3: %+v", len(tp.Passes), tp.Passes)
+		}
+		byID := map[string]PassSummary{}
+		for _, ps := range tp.Passes {
+			byID[ps.ID] = ps
+		}
+		if got := byID["roms-content-pull"]; got.Direction != "in" || got.Bytes != 1000 || got.Files != 1 {
+			t.Errorf("content pull summary = %+v", got)
+		}
+		if got := byID["roms-metadata-push"]; got.Direction != "out" || got.Bytes != 40 {
+			t.Errorf("metadata push summary = %+v", got)
+		}
+		if byID["roms-metadata-pull"].Label == "" {
+			t.Error("the metadata seed pass has no label to render")
+		}
+	}
+}
+
 func TestInsufficientSpaceIsRefused(t *testing.T) {
 	r := stubRunner{results: map[string]runner.Result{
 		"roms-content-pull": {TransferBytes: 100 << 30}, // 100 GiB incoming
@@ -2275,15 +2315,27 @@ type DriftItem struct {
 	Rel  string `json:"rel"`
 }
 
+// PassSummary is one pass's contribution to a tree. The UI renders each as
+// its own labelled row, so the ROMs tree visibly pulls content and pushes
+// metadata rather than showing a single netted-out figure.
+type PassSummary struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Direction string `json:"direction"` // "in" or "out"
+	Files     int    `json:"files"`
+	Bytes     int64  `json:"bytes"`
+}
+
 // TreePlan summarises one tree.
 type TreePlan struct {
-	Tree          string      `json:"tree"`
-	Label         string      `json:"label"`
-	IncomingFiles int         `json:"incomingFiles"`
-	IncomingBytes int64       `json:"incomingBytes"`
-	OutgoingFiles int         `json:"outgoingFiles"`
-	OutgoingBytes int64       `json:"outgoingBytes"`
-	Drift         []DriftItem `json:"drift"`
+	Tree          string        `json:"tree"`
+	Label         string        `json:"label"`
+	IncomingFiles int           `json:"incomingFiles"`
+	IncomingBytes int64         `json:"incomingBytes"`
+	OutgoingFiles int           `json:"outgoingFiles"`
+	OutgoingBytes int64         `json:"outgoingBytes"`
+	Passes        []PassSummary `json:"passes"`
+	Drift         []DriftItem   `json:"drift"`
 }
 
 // Plan is the whole reviewable summary.
@@ -2340,13 +2392,19 @@ func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.P
 				files++
 			}
 		}
+		dir := "in"
 		if p.Direction == pass.DirPull {
 			tp.IncomingFiles += files
 			tp.IncomingBytes += res.TransferBytes
 		} else {
+			dir = "out"
 			tp.OutgoingFiles += files
 			tp.OutgoingBytes += res.TransferBytes
 		}
+		tp.Passes = append(tp.Passes, PassSummary{
+			ID: p.ID, Label: p.Label, Direction: dir,
+			Files: files, Bytes: res.TransferBytes,
+		})
 
 		side := SideLocal
 		if p.Direction == pass.DirPush {
@@ -4052,6 +4110,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	type resp struct {
 		Reachable   bool            `json:"reachable"`
 		Err         string          `json:"err,omitempty"`
+		NASHost     string          `json:"nasHost"`
 		Fake        bool            `json:"fake"`
 		Scenario    string          `json:"scenario,omitempty"`
 		Scenarios   []string        `json:"scenarios,omitempty"`
@@ -4061,7 +4120,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastSummary *syncer.Summary `json:"lastSummary,omitempty"`
 	}
 
-	out := resp{Version: a.opts.Version}
+	out := resp{Version: a.opts.Version, NASHost: a.opts.Cfg.NAS.Host}
 
 	a.mu.Lock()
 	out.Busy = a.busy
@@ -4237,15 +4296,24 @@ The fake scenario route is registered only when the fake backend is present."
 
 ### Task 13: Embedded web UI
 
-No framework, no build step. The page must be readable on a TV across the room and on a phone in a car park.
+The design was reviewed and approved as an interactive mockup covering all eight states before this task was written. Reproduce it faithfully; the decisions below are deliberate.
+
+**Design decisions, and why**
+
+- **Indigo accent, deliberately outside the green/amber/red register.** Semantic state colour must never be confused with "this is a button".
+- **Three type roles.** `JetBrains Mono` carries every path, byte count and percentage, because paths and sizes *are* the content. `Bricolage Grotesque` for headings, `Public Sans` for labels.
+- **Each tree renders one row per pass, with an explicit arrow.** BIOS shows only `↓`, Saves only `↑`, ROMs shows both. That asymmetry teaches the split, which is the one genuinely counterintuitive thing about this tool. Direction is encoded in the arrow glyph as well as colour, so it survives colourblindness.
+- **The five passes are always listed, dimmed at 0% before a run.** The sequence is the mental model; the progress display should not be the first time the user meets it.
+- **Drift is visually quarantined**: its own bordered block outside the normal card rhythm, `LOCAL` and `NAS` chips so the side being deleted from is never inferred, and a footer that counts what is ticked before you commit.
+- **Offline is presented as normal, not as an error.** In a car it is the working state. The copy reads "Nothing to do until you are home. The library on this box is complete and playable."
 
 **Files:**
 - Create: `internal/server/assets/index.html`, `internal/server/assets/style.css`, `internal/server/assets/app.js`, `internal/server/assets/assets.go`
-- Modify: `internal/server/server_test.go` (add the embedded-assets test)
+- Modify: `internal/server/server_test.go` (add the embedded-assets tests)
 
 **Interfaces:**
-- Consumes: the JSON API from Task 12
-- Produces: `var server.Assets fs.FS`
+- Consumes: the JSON API from Task 12, including `nasHost` on `/api/status` and `passes` on each `plan.TreePlan`
+- Produces: `assets.FS`
 
 - [ ] **Step 1: Write the markup**
 
@@ -4258,49 +4326,79 @@ Create `internal/server/assets/index.html`:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>flashcart</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=JetBrains+Mono:wght@400;500;700&family=Public+Sans:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div id="fake-banner" hidden>
-  <strong>FAKE MODE</strong>
-  <span>Nothing is mounted and no data moves.</span>
-  <label>Scenario
+
+<div class="fake-bar" id="fake-bar" hidden>
+  <span class="fake-tag">Fake mode</span>
+  <span class="fake-note">Nothing is mounted and no data moves.</span>
+  <label class="fake-pick">Scenario
     <select id="scenario"></select>
   </label>
 </div>
 
-<header>
-  <h1>flashcart</h1>
-  <div class="meta">
-    <span id="nas-pill" class="pill unknown">NAS: checking</span>
-    <span id="last-sync">Never synced</span>
-    <span id="version"></span>
-  </div>
-</header>
+<div class="app">
+  <header>
+    <div>
+      <h1 class="wordmark">flashcart</h1>
+      <div class="tagline" id="tagline"></div>
+    </div>
+    <div class="head-right">
+      <span class="pill" id="nas-pill">checking</span>
+      <div class="stamp">
+        <div id="last-sync">Never synced</div>
+        <div id="version"></div>
+      </div>
+    </div>
+  </header>
 
-<main>
-  <section id="cards"></section>
+  <div class="banner" id="banner" hidden></div>
 
-  <section id="space" hidden></section>
+  <section>
+    <div class="section-head">
+      <h2>Manifest</h2>
+      <span class="hint">&#8595; from NAS &middot; &#8593; to NAS</span>
+    </div>
+    <div class="trees" id="trees"></div>
+  </section>
 
   <div class="actions">
-    <button id="plan-btn">Plan</button>
-    <button id="sync-btn">Sync</button>
+    <button class="act primary" id="plan-btn">Plan</button>
+    <button class="act" id="sync-btn">Sync</button>
+    <span class="act-note" id="act-note"></span>
   </div>
 
-  <section id="progress" hidden>
-    <h2>Progress</h2>
-    <div id="bars"></div>
-    <pre id="log"></pre>
+  <section>
+    <div class="section-head">
+      <h2>Passes</h2>
+      <span class="hint">metadata is pulled before it is pushed, so an empty box is seeded</span>
+    </div>
+    <div class="passes" id="passes"></div>
   </section>
 
-  <section id="drift" hidden>
-    <h2>Drift <span class="hint">present on the destination, absent from the source</span></h2>
-    <p class="warn">Deletion is permanent. Only ticked items are removed.</p>
-    <div id="drift-items"></div>
-    <button id="drift-btn" disabled>Delete ticked items</button>
+  <section id="drift-section" hidden>
+    <div class="drift">
+      <div class="drift-head">
+        <h2 id="drift-title">Drift</h2>
+        <p>Present on the destination, absent from the source. Deletion is permanent and only ticked rows are removed.</p>
+      </div>
+      <div class="drift-rows" id="drift-rows"></div>
+      <div class="drift-foot">
+        <button class="act danger" id="drift-btn" disabled>Delete ticked</button>
+        <span class="act-note" id="drift-note">Nothing ticked</span>
+      </div>
+    </div>
   </section>
-</main>
+
+  <section>
+    <div class="section-head"><h2>Log</h2></div>
+    <div class="log" id="log"></div>
+  </section>
+</div>
 
 <script src="/app.js"></script>
 </body>
@@ -4309,90 +4407,260 @@ Create `internal/server/assets/index.html`:
 
 - [ ] **Step 2: Write the stylesheet**
 
-Create `internal/server/assets/style.css`:
+Create `internal/server/assets/style.css`. Colours are defined token-level: the bare `:root` carries the complete light palette, the media query is guarded with `:root:not([data-theme="light"])` so an explicit light choice beats a dark OS, and `:root[data-theme="dark"]` repeats it so the toggle wins in both directions. No colour is declared only inside a media or `[data-theme]` block.
 
 ```css
 :root {
-  --bg: #14161a;
-  --panel: #1d2027;
-  --line: #2c313b;
-  --text: #e6e8ec;
-  --dim: #99a0ad;
-  --ok: #4ba36b;
-  --bad: #c9524f;
-  --warn: #c98a3a;
-  --accent: #5b8dd6;
+  --bg:        #F1F1F6;
+  --surface:   #FFFFFF;
+  --surface-2: #E8E8F0;
+  --line:      #D6D6E2;
+  --line-soft: #E4E4EE;
+  --text:      #16171F;
+  --dim:       #64667A;
+  --faint:     #8E90A4;
+  --accent:    #4A52B8;
+  --accent-ink:#FFFFFF;
+  --accent-soft:rgba(74,82,184,.10);
+  --ok:        #2E7D53;
+  --ok-soft:   rgba(46,125,83,.12);
+  --warn:      #98600F;
+  --warn-soft: rgba(152,96,15,.12);
+  --danger:    #A9332A;
+  --danger-soft:rgba(169,51,42,.10);
+  --shadow:    0 1px 2px rgba(22,23,31,.06), 0 8px 24px -12px rgba(22,23,31,.18);
+
+  --display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --ui:      "Public Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #0E1016;
+    --surface:   #161923;
+    --surface-2: #1D212D;
+    --line:      #2A2F3E;
+    --line-soft: #222634;
+    --text:      #E9EAF1;
+    --dim:       #949AAC;
+    --faint:     #6E7488;
+    --accent:    #8B93F0;
+    --accent-ink:#12141C;
+    --accent-soft:rgba(139,147,240,.14);
+    --ok:        #5FB97F;
+    --ok-soft:   rgba(95,185,127,.14);
+    --warn:      #D9A155;
+    --warn-soft: rgba(217,161,85,.14);
+    --danger:    #E0736A;
+    --danger-soft:rgba(224,115,106,.13);
+    --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #0E1016;
+  --surface:   #161923;
+  --surface-2: #1D212D;
+  --line:      #2A2F3E;
+  --line-soft: #222634;
+  --text:      #E9EAF1;
+  --dim:       #949AAC;
+  --faint:     #6E7488;
+  --accent:    #8B93F0;
+  --accent-ink:#12141C;
+  --accent-soft:rgba(139,147,240,.14);
+  --ok:        #5FB97F;
+  --ok-soft:   rgba(95,185,127,.14);
+  --warn:      #D9A155;
+  --warn-soft: rgba(217,161,85,.14);
+  --danger:    #E0736A;
+  --danger-soft:rgba(224,115,106,.13);
+  --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  padding: 1.5rem;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: var(--ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
-h1 { font-size: 1.5rem; margin: 0; }
-h2 { font-size: 1.05rem; margin: 0 0 .75rem; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 
-#fake-banner {
-  display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
-  background: var(--warn); color: #1a1204;
-  padding: .6rem 1rem; border-radius: 6px; margin-bottom: 1.25rem;
+/* fake mode */
+.fake-bar {
+  display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
+  padding: .7rem 1.25rem;
+  background: var(--warn-soft);
+  border-bottom: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: .82rem;
+}
+.fake-tag {
+  font-family: var(--mono); font-size: .62rem; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase;
+  border: 1px solid var(--warn); border-radius: 3px; padding: .2rem .45rem;
+}
+.fake-note { color: var(--dim); }
+.fake-pick { margin-left: auto; font-family: var(--mono); font-size: .72rem; display: flex; gap: .4rem; align-items: center; }
+.fake-pick select {
+  font-family: var(--mono); font-size: .72rem;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; padding: .25rem .4rem;
 }
 
-header {
-  display: flex; justify-content: space-between; align-items: center;
-  flex-wrap: wrap; gap: .75rem;
-  padding-bottom: 1rem; border-bottom: 1px solid var(--line);
+/* shell */
+.app { max-width: 62rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; display: flex; flex-direction: column; gap: 1.75rem; }
+
+header { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+
+.wordmark { font-family: var(--display); font-weight: 700; font-size: 1.7rem; letter-spacing: -.02em; margin: 0; line-height: 1; }
+.tagline { font-family: var(--mono); font-size: .7rem; color: var(--faint); letter-spacing: .04em; margin-top: .4rem; }
+
+.head-right { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-family: var(--mono); font-size: .72rem; font-weight: 500;
+  padding: .3rem .6rem; border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
+  color: var(--dim); background: var(--surface-2);
+}
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.pill.ok  { color: var(--ok);     background: var(--ok-soft);     border-color: var(--ok-soft); }
+.pill.bad { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
+
+.stamp { font-family: var(--mono); font-size: .7rem; color: var(--faint); text-align: right; }
+
+.banner {
+  display: flex; gap: .75rem; align-items: flex-start;
+  padding: .8rem 1rem; border-radius: 6px; border-left: 3px solid; font-size: .875rem;
+}
+.banner strong { font-family: var(--mono); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; }
+.banner.bad  { color: var(--danger); background: var(--danger-soft); border-left-color: var(--danger); }
+.banner.warn { color: var(--warn);   background: var(--warn-soft);   border-left-color: var(--warn); }
+
+/* manifest */
+.trees { display: grid; gap: 1rem; grid-template-columns: 1.4fr 1fr 1fr; }
+@media (max-width: 46rem) { .trees { grid-template-columns: 1fr; } }
+
+.tree {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 1rem; display: flex; flex-direction: column; gap: .85rem; box-shadow: var(--shadow);
+}
+.tree-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.tree-name { font-family: var(--display); font-weight: 700; font-size: 1.05rem; letter-spacing: -.01em; }
+.tree-tag {
+  font-family: var(--mono); font-size: .58rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft); padding: .18rem .4rem; border-radius: 3px;
 }
 
-.meta { display: flex; gap: 1rem; align-items: center; color: var(--dim); font-size: .875rem; }
+.flows { display: flex; flex-direction: column; gap: .5rem; }
+.flow { display: grid; grid-template-columns: 1.1rem 1fr auto; align-items: baseline; gap: .55rem; }
+.flow-arrow { font-family: var(--mono); font-weight: 700; font-size: .95rem; line-height: 1; }
+.flow-arrow.in  { color: var(--accent); }
+.flow-arrow.out { color: var(--ok); }
+.flow-label { font-size: .8rem; color: var(--dim); }
+.flow-label b { display: block; color: var(--text); font-weight: 600; font-size: .82rem; }
+.flow-val { font-family: var(--mono); font-size: .8rem; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.flow-val span { display: block; color: var(--faint); font-size: .68rem; }
+.flow.nil .flow-val, .flow.nil .flow-label { color: var(--faint); }
+.flow.nil .flow-arrow { color: var(--faint); opacity: .5; }
 
-.pill { padding: .25rem .7rem; border-radius: 999px; font-weight: 600; font-size: .8rem; }
-.pill.ok { background: rgba(75,163,107,.18); color: var(--ok); }
-.pill.bad { background: rgba(201,82,79,.18); color: var(--bad); }
-.pill.unknown { background: rgba(153,160,173,.18); color: var(--dim); }
-
-#cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin: 1.5rem 0; }
-
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; }
-.card h3 { margin: 0 0 .6rem; font-size: 1rem; }
-.card dl { display: grid; grid-template-columns: auto 1fr; gap: .25rem .75rem; margin: 0; font-size: .9rem; }
-.card dt { color: var(--dim); }
-.card dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
-
-.actions { display: flex; gap: .75rem; margin: 1.5rem 0; }
-
-button {
-  background: var(--accent); color: #fff; border: 0; border-radius: 6px;
-  padding: .6rem 1.4rem; font-size: 1rem; font-weight: 600; cursor: pointer;
+.tree-foot {
+  border-top: 1px solid var(--line-soft); padding-top: .6rem;
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: .7rem; color: var(--faint);
 }
-button:disabled { opacity: .4; cursor: not-allowed; }
-#drift-btn { background: var(--bad); }
+.tree-foot .drifted { color: var(--danger); font-weight: 700; }
 
-#space { padding: .75rem 1rem; border-radius: 6px; background: rgba(201,82,79,.15); color: var(--bad); }
+/* actions */
+.actions { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+button.act {
+  font-family: var(--ui); font-size: .9rem; font-weight: 600;
+  padding: .6rem 1.35rem; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  cursor: pointer; transition: background .12s, border-color .12s, opacity .12s;
+}
+button.act:hover:not(:disabled) { border-color: var(--faint); }
+button.act.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.act.primary:hover:not(:disabled) { filter: brightness(1.08); }
+button.act.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.act:disabled { opacity: .38; cursor: not-allowed; }
+.act-note { font-family: var(--mono); font-size: .72rem; color: var(--faint); }
 
-.bar { margin-bottom: .5rem; }
-.bar-label { display: flex; justify-content: space-between; font-size: .85rem; color: var(--dim); }
-.bar-track { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
-.bar-fill { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
-.bar.ok .bar-fill { background: var(--ok); }
-.bar.bad .bar-fill { background: var(--bad); }
+/* passes */
+.section-head { display: flex; align-items: baseline; gap: .7rem; margin-bottom: .8rem; }
+.section-head h2 { font-family: var(--display); font-weight: 700; font-size: 1rem; margin: 0; letter-spacing: -.01em; }
+.section-head .hint { font-family: var(--mono); font-size: .68rem; color: var(--faint); }
 
-#log {
-  background: #0e1013; border: 1px solid var(--line); border-radius: 6px;
-  padding: .75rem; max-height: 16rem; overflow: auto;
-  font-size: .8rem; white-space: pre-wrap; margin-top: 1rem;
+.passes { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); }
+.pass {
+  display: grid; grid-template-columns: 1.3rem 1fr 7rem 3rem;
+  align-items: center; gap: .75rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line-soft);
+}
+.pass:last-child { border-bottom: 0; }
+.pass-n { font-family: var(--mono); font-size: .7rem; color: var(--faint); font-variant-numeric: tabular-nums; }
+.pass-name { font-size: .85rem; display: flex; align-items: center; gap: .5rem; }
+.pass-name .dir { font-family: var(--mono); font-weight: 700; font-size: .8rem; }
+.pass-name .dir.in { color: var(--accent); }
+.pass-name .dir.out { color: var(--ok); }
+.track { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.fill { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .35s ease; }
+.pass.done .fill { background: var(--ok); }
+.pass.failed .fill { background: var(--danger); }
+.pass-state { font-family: var(--mono); font-size: .7rem; font-variant-numeric: tabular-nums; text-align: right; color: var(--faint); }
+.pass.done .pass-state { color: var(--ok); }
+.pass.failed .pass-state { color: var(--danger); font-weight: 700; }
+.pass.idle { opacity: .45; }
+.pass-err {
+  grid-column: 2 / -1; font-family: var(--mono); font-size: .7rem;
+  color: var(--danger); background: var(--danger-soft);
+  padding: .4rem .55rem; border-radius: 4px; margin-top: .4rem;
+  overflow-x: auto; white-space: pre;
 }
 
-#drift { margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
-.hint { font-weight: 400; color: var(--dim); font-size: .8rem; }
-.warn { color: var(--warn); font-size: .875rem; }
-.drift-row { display: flex; gap: .6rem; align-items: baseline; padding: .2rem 0; font-size: .85rem; }
-.drift-side { color: var(--dim); font-size: .75rem; text-transform: uppercase; min-width: 3.5rem; }
+/* drift quarantine */
+.drift { border: 1px solid var(--danger); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.drift-head { background: var(--danger-soft); padding: .85rem 1rem; border-bottom: 1px solid var(--danger); }
+.drift-head h2 { font-family: var(--display); font-size: 1rem; font-weight: 700; margin: 0 0 .2rem; color: var(--danger); letter-spacing: -.01em; }
+.drift-head p { margin: 0; font-size: .8rem; color: var(--dim); }
+.drift-rows { display: flex; flex-direction: column; }
+.drift-row {
+  display: grid; grid-template-columns: auto 3.6rem 1fr; align-items: center; gap: .7rem;
+  padding: .5rem 1rem; border-bottom: 1px solid var(--line-soft); cursor: pointer; font-size: .8rem;
+}
+.drift-row:last-child { border-bottom: 0; }
+.drift-row:hover { background: var(--surface-2); }
+.drift-row input { accent-color: var(--danger); width: 15px; height: 15px; cursor: pointer; }
+.side {
+  font-family: var(--mono); font-size: .58rem; font-weight: 700; letter-spacing: .08em;
+  text-align: center; padding: .16rem 0; border-radius: 3px;
+  border: 1px solid var(--line); color: var(--dim);
+}
+.side.nas { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.drift-path { font-family: var(--mono); font-size: .76rem; overflow-x: auto; white-space: nowrap; }
+.drift-foot { padding: .85rem 1rem; display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+
+/* log */
+.log {
+  font-family: var(--mono); font-size: .72rem;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: .75rem 1rem; max-height: 11rem; overflow: auto; color: var(--dim); white-space: pre-wrap;
+}
+.log .t { color: var(--faint); }
+.log .e { color: var(--danger); }
+.log .g { color: var(--ok); }
+
+[hidden] { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 ```
 
 - [ ] **Step 3: Write the script**
@@ -4402,7 +4670,25 @@ Create `internal/server/assets/app.js`:
 ```js
 const $ = (id) => document.getElementById(id);
 
-const state = { plan: null, busy: false };
+// The pass sequence is the mental model, so it is rendered before any run
+// rather than appearing for the first time during one.
+const PASSES = [
+  { id: "bios-pull",          n: 1, name: "BIOS",          dir: "in"  },
+  { id: "roms-content-pull",  n: 2, name: "ROM content",   dir: "in"  },
+  { id: "roms-metadata-pull", n: 3, name: "Metadata seed", dir: "in"  },
+  { id: "roms-metadata-push", n: 4, name: "Metadata",      dir: "out" },
+  { id: "saves-push",         n: 5, name: "Saves",         dir: "out" },
+];
+
+// BIOS pulls only, Saves pushes only, ROMs does both. The asymmetry is what
+// teaches the split.
+const TREES = [
+  { key: "roms",  name: "ROMs",  tag: "split" },
+  { key: "bios",  name: "BIOS",  tag: "pull"  },
+  { key: "saves", name: "Saves", tag: "push"  },
+];
+
+const state = { status: null, plan: null, progress: {}, err: {}, busy: false };
 
 function humanBytes(n) {
   if (!n) return "0 B";
@@ -4412,40 +4698,190 @@ function humanBytes(n) {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function log(line) {
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function log(kind, text) {
   const el = $("log");
-  el.textContent += line + "\n";
+  const div = document.createElement("div");
+  div.className = kind;
+  div.textContent = text;
+  el.appendChild(div);
   el.scrollTop = el.scrollHeight;
 }
 
-function setBusy(busy) {
-  state.busy = busy;
-  $("plan-btn").disabled = busy;
-  $("sync-btn").disabled = busy;
+/* ── rendering ─────────────────────────────────────────────── */
+
+function renderTrees() {
+  const byTree = {};
+  for (const t of (state.plan?.trees || [])) byTree[t.tree] = t;
+
+  $("trees").innerHTML = TREES.map(({ key, name, tag }) => {
+    const t = byTree[key];
+    let flows;
+
+    if (!t) {
+      flows = `<div class="flow nil">
+        <span class="flow-arrow in">&middot;</span>
+        <span class="flow-label"><b>not planned</b></span>
+        <span class="flow-val">&mdash;</span></div>`;
+    } else {
+      flows = (t.passes || []).map((p) => {
+        const nil = !p.files;
+        return `<div class="flow ${nil ? "nil" : ""}">
+          <span class="flow-arrow ${p.direction}">${p.direction === "in" ? "&#8595;" : "&#8593;"}</span>
+          <span class="flow-label"><b>${esc(p.label)}</b></span>
+          <span class="flow-val">${nil ? "&mdash;" : p.files.toLocaleString() + " files"}
+            ${nil ? "" : `<span>${humanBytes(p.bytes)}</span>`}</span>
+        </div>`;
+      }).join("");
+    }
+
+    const n = t ? (t.drift || []).length : 0;
+    const drift = n
+      ? `<span class="drifted">${n} drifted</span>`
+      : `<span>${t ? "no drift" : "&mdash;"}</span>`;
+
+    return `<div class="tree">
+      <div class="tree-head"><span class="tree-name">${name}</span><span class="tree-tag">${tag}</span></div>
+      <div class="flows">${flows}</div>
+      <div class="tree-foot"><span>/userdata/${key}</span>${drift}</div>
+    </div>`;
+  }).join("");
 }
 
+function renderPasses() {
+  $("passes").innerHTML = PASSES.map((p) => {
+    const v = state.progress[p.id];
+    let cls = "idle", pct = 0, label = "&mdash;";
+
+    if (v === "done")        { cls = "done";   pct = 100; label = "done"; }
+    else if (v === "failed") { cls = "failed"; pct = 100; label = "failed"; }
+    else if (typeof v === "number") { cls = "running"; pct = v; label = v + "%"; }
+    else if (state.busy)     { label = "waiting"; }
+
+    const err = state.err[p.id] ? `<div class="pass-err">${esc(state.err[p.id])}</div>` : "";
+
+    return `<div class="pass ${cls}">
+      <span class="pass-n">${p.n}</span>
+      <span class="pass-name"><span class="dir ${p.dir}">${p.dir === "in" ? "&#8595;" : "&#8593;"}</span>${p.name}</span>
+      <span class="track"><span class="fill" style="width:${pct}%"></span></span>
+      <span class="pass-state">${label}</span>
+      ${err}
+    </div>`;
+  }).join("");
+}
+
+function renderDrift() {
+  const items = (state.plan?.trees || []).flatMap((t) => t.drift || []);
+  $("drift-section").hidden = items.length === 0;
+  if (!items.length) return;
+
+  $("drift-title").textContent = `Drift — ${items.length} path${items.length === 1 ? "" : "s"}`;
+  $("drift-rows").innerHTML = items.map((d, i) => `
+    <label class="drift-row">
+      <input type="checkbox" data-i="${i}">
+      <span class="side ${esc(d.side)}">${esc(d.side).toUpperCase()}</span>
+      <span class="drift-path">${esc(d.tree)}/${esc(d.rel)}</span>
+    </label>`).join("");
+
+  const boxes = () => [...$("drift-rows").querySelectorAll("input")];
+  const update = () => {
+    const n = boxes().filter((b) => b.checked).length;
+    $("drift-btn").disabled = n === 0;
+    $("drift-note").textContent = n === 0
+      ? "Nothing ticked"
+      : `${n} path${n === 1 ? "" : "s"} will be permanently deleted`;
+  };
+  boxes().forEach((b) => b.addEventListener("change", update));
+  update();
+
+  $("drift-btn").onclick = async () => {
+    const chosen = boxes().filter((b) => b.checked).map((b) => items[+b.dataset.i]);
+    if (!chosen.length) return;
+    if (!confirm(`Permanently delete ${chosen.length} path(s)? This cannot be undone.`)) return;
+
+    const res = await fetch("/api/drift/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: chosen }),
+    });
+    const body = await res.json();
+    if (!res.ok) { log("e", "delete refused: " + body.err); return; }
+    log("g", `deleted ${body.deleted.length} path(s)`);
+    doPlan();
+  };
+}
+
+function setBanner(kind, title, text) {
+  const b = $("banner");
+  if (!kind) { b.hidden = true; return; }
+  b.hidden = false;
+  b.className = "banner " + kind;
+  b.innerHTML = `<strong>${esc(title)}</strong><span>${esc(text)}</span>`;
+}
+
+function renderControls() {
+  const s = state.status;
+  const reachable = s?.reachable;
+  const blocked = !reachable || state.busy || (state.plan && !state.plan.sufficient);
+
+  $("plan-btn").disabled = !reachable || state.busy;
+  $("sync-btn").disabled = blocked;
+
+  if (state.busy) {
+    $("act-note").textContent = "Sync in progress — plan and sync are locked";
+  } else if (!reachable) {
+    $("act-note").textContent = "";
+  } else if (!state.plan) {
+    $("act-note").textContent = "Plan first to see what would move.";
+  } else if (state.plan.sufficient) {
+    $("act-note").textContent =
+      `${humanBytes(state.plan.requiredBytes)} incoming · ${humanBytes(state.plan.freeBytes)} free`;
+  } else {
+    $("act-note").textContent = "";
+  }
+}
+
+/* ── data ──────────────────────────────────────────────────── */
+
 async function refreshStatus() {
-  const s = await (await fetch("/api/status")).json();
+  let s;
+  try {
+    s = await (await fetch("/api/status")).json();
+  } catch {
+    return;
+  }
+  state.status = s;
+  state.busy = s.busy;
 
   const pill = $("nas-pill");
   pill.className = "pill " + (s.reachable ? "ok" : "bad");
-  pill.textContent = s.reachable ? "NAS: reachable" : "NAS: unreachable";
-  pill.title = s.err || "";
+  pill.textContent = s.reachable ? "NAS reachable" : "NAS unreachable";
 
+  $("tagline").textContent = s.nasHost ? "NAS · " + s.nasHost : "";
   $("version").textContent = s.version ? "v" + s.version : "";
   $("last-sync").textContent = s.lastSyncAt
     ? "Last sync " + new Date(s.lastSyncAt).toLocaleString()
     : "Never synced";
 
-  // Sync is pointless without the NAS, so do not offer it.
-  $("sync-btn").disabled = state.busy || !s.reachable;
-  $("plan-btn").disabled = state.busy || !s.reachable;
+  // Offline is the normal working state in a car, not a failure.
+  if (!s.reachable) {
+    setBanner("bad", "NAS unreachable",
+      "Nothing to do until you are home. The library on this box is complete and playable.");
+  } else if (state.plan && !state.plan.sufficient) {
+    setBanner("bad", "Not enough space", state.plan.message);
+  } else {
+    setBanner(null);
+  }
 
   if (s.fake) {
-    $("fake-banner").hidden = false;
+    $("fake-bar").hidden = false;
     const sel = $("scenario");
     if (!sel.options.length) {
-      for (const name of s.scenarios) {
+      for (const name of s.scenarios || []) {
         const opt = document.createElement("option");
         opt.value = opt.textContent = name;
         sel.appendChild(opt);
@@ -4457,115 +4893,54 @@ async function refreshStatus() {
           body: JSON.stringify({ scenario: sel.value }),
         });
         state.plan = null;
-        $("cards").innerHTML = "";
-        $("drift").hidden = true;
-        $("space").hidden = true;
-        log("scenario switched to " + sel.value);
+        state.progress = {};
+        state.err = {};
+        log("t", "scenario switched to " + sel.value);
+        renderTrees(); renderPasses(); renderDrift();
         refreshStatus();
       });
     }
     sel.value = s.scenario;
   }
-}
 
-function renderPlan(p) {
-  state.plan = p;
-
-  $("cards").innerHTML = p.trees.map((t) => `
-    <div class="card">
-      <h3>${t.label}</h3>
-      <dl>
-        <dt>Incoming</dt><dd>${t.incomingFiles || 0} files, ${humanBytes(t.incomingBytes)}</dd>
-        <dt>Outgoing</dt><dd>${t.outgoingFiles || 0} files, ${humanBytes(t.outgoingBytes)}</dd>
-        <dt>Drift</dt><dd>${(t.drift || []).length}</dd>
-      </dl>
-    </div>`).join("");
-
-  const space = $("space");
-  if (!p.sufficient) {
-    space.hidden = false;
-    space.textContent = p.message;
-    $("sync-btn").disabled = true;
-  } else {
-    space.hidden = true;
-  }
-
-  const items = p.trees.flatMap((t) => t.drift || []);
-  const box = $("drift-items");
-  if (!items.length) {
-    $("drift").hidden = true;
-    return;
-  }
-  $("drift").hidden = false;
-  box.innerHTML = items.map((d, i) => `
-    <label class="drift-row">
-      <input type="checkbox" data-i="${i}">
-      <span class="drift-side">${d.side}</span>
-      <span>${d.tree}/${d.rel}</span>
-    </label>`).join("");
-
-  const boxes = () => [...box.querySelectorAll("input[type=checkbox]")];
-  const update = () => { $("drift-btn").disabled = !boxes().some((b) => b.checked); };
-  boxes().forEach((b) => b.addEventListener("change", update));
-  update();
-
-  $("drift-btn").onclick = async () => {
-    const chosen = boxes().filter((b) => b.checked).map((b) => items[+b.dataset.i]);
-    if (!chosen.length) return;
-    if (!confirm(`Permanently delete ${chosen.length} item(s)? This cannot be undone.`)) return;
-
-    const res = await fetch("/api/drift/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: chosen }),
-    });
-    const body = await res.json();
-    if (!res.ok) { log("drift delete failed: " + body.err); return; }
-    log(`deleted ${body.deleted.length} item(s)`);
-    doPlan();
-  };
+  renderControls();
 }
 
 async function doPlan() {
-  setBusy(true);
-  $("progress").hidden = false;
-  log("planning...");
+  state.busy = true;
+  renderControls();
+  log("t", "planning…");
   try {
     const res = await fetch("/api/plan", { method: "POST" });
     const body = await res.json();
-    if (!res.ok) { log("plan failed: " + body.err); return; }
-    renderPlan(body);
-    log("plan complete");
+    if (!res.ok) { log("e", "plan failed: " + body.err); return; }
+    state.plan = body;
+    renderTrees();
+    renderDrift();
+    const drifted = (body.trees || []).reduce((n, t) => n + (t.drift || []).length, 0);
+    log(body.sufficient ? "g" : "e",
+      `plan complete — ${humanBytes(body.requiredBytes)} in, ${drifted} drifted path(s)` +
+      (body.sufficient ? "" : " — refused, insufficient space"));
   } finally {
-    setBusy(false);
-    refreshStatus();
+    state.busy = false;
+    await refreshStatus();
   }
-}
-
-function bar(passId) {
-  let el = document.querySelector(`.bar[data-pass="${passId}"]`);
-  if (!el) {
-    el = document.createElement("div");
-    el.className = "bar";
-    el.dataset.pass = passId;
-    el.innerHTML = `
-      <div class="bar-label"><span>${passId}</span><span class="pct">0%</span></div>
-      <div class="bar-track"><div class="bar-fill"></div></div>`;
-    $("bars").appendChild(el);
-  }
-  return el;
 }
 
 async function doSync() {
-  setBusy(true);
-  $("progress").hidden = false;
-  $("bars").innerHTML = "";
-  log("sync started");
+  state.progress = {};
+  state.err = {};
+  state.busy = true;
+  renderPasses();
+  renderControls();
+  log("t", "sync started");
+
   const res = await fetch("/api/sync", { method: "POST" });
   if (!res.ok) {
     const body = await res.json();
-    log("sync refused: " + body.err);
-    setBusy(false);
+    log("e", "sync refused: " + body.err);
+    state.busy = false;
+    renderControls();
   }
 }
 
@@ -4574,24 +4949,31 @@ function connectEvents() {
   es.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "progress") {
-      const el = bar(m.passId);
-      el.querySelector(".bar-fill").style.width = (m.percent || 0) + "%";
-      el.querySelector(".pct").textContent = (m.percent || 0) + "%";
+      state.progress[m.passId] = m.percent;
+      renderPasses();
     } else if (m.type === "pass") {
-      const el = bar(m.passId);
-      el.classList.add(m.ok ? "ok" : "bad");
-      log(`${m.label || m.passId}: ${m.ok ? "ok" : "FAILED: " + m.err}`);
+      state.progress[m.passId] = m.ok ? "done" : "failed";
+      if (!m.ok) state.err[m.passId] = m.err;
+      log(m.ok ? "g" : "e", `${m.label || m.passId}: ${m.ok ? "ok" : "FAILED"}`);
+      renderPasses();
     } else if (m.type === "done") {
-      log(m.ok ? "sync complete" : "sync failed: " + m.err);
-      setBusy(false);
+      state.busy = false;
+      if (!m.ok) {
+        setBanner("bad", "Sync failed",
+          "Remaining passes were abandoned. Nothing was deleted. The NAS was unmounted.");
+      }
+      log(m.ok ? "g" : "e", m.ok ? "sync complete" : "sync failed: " + m.err);
       refreshStatus();
     }
   };
-  es.onerror = () => log("event stream interrupted, retrying");
+  es.onerror = () => log("t", "event stream interrupted, retrying");
 }
 
 $("plan-btn").addEventListener("click", doPlan);
 $("sync-btn").addEventListener("click", doSync);
+
+renderTrees();
+renderPasses();
 connectEvents();
 refreshStatus();
 setInterval(refreshStatus, 15000);
@@ -4613,9 +4995,9 @@ import "embed"
 var FS embed.FS
 ```
 
-- [ ] **Step 5: Write the failing test for the real assets**
+- [ ] **Step 5: Write the failing tests for the real assets**
 
-Append to `internal/server/server_test.go`:
+Append to `internal/server/server_test.go`, adding the imports `"io/fs"` and `"github.com/adamcarlile/flashcart/internal/server/assets"`:
 
 ```go
 func TestEmbeddedAssetsAreComplete(t *testing.T) {
@@ -4636,27 +5018,73 @@ func TestIndexCarriesFakeBanner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "fake-banner") {
+	if !strings.Contains(string(b), "fake-bar") {
 		t.Error("index.html has no fake mode banner")
 	}
 }
-```
 
-Add the import `"github.com/adamcarlile/flashcart/internal/server/assets"` to the test file.
+// Every colour must be reachable in the un-stamped theme state, where only
+// prefers-color-scheme applies. A token defined solely inside a media or
+// [data-theme] block renders one theme's text on the other theme's ground.
+func TestStylesheetDefinesEveryTokenAtRoot(t *testing.T) {
+	b, err := fs.ReadFile(assets.FS, "style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(b)
+
+	bare := css[strings.Index(css, ":root {"):strings.Index(css, "@media (prefers-color-scheme: dark)")]
+	for _, token := range []string{
+		"--bg:", "--surface:", "--surface-2:", "--line:", "--line-soft:",
+		"--text:", "--dim:", "--faint:", "--accent:", "--accent-ink:",
+		"--accent-soft:", "--ok:", "--ok-soft:", "--warn:", "--warn-soft:",
+		"--danger:", "--danger-soft:", "--shadow:",
+	} {
+		if !strings.Contains(bare, token) {
+			t.Errorf("token %s is not defined on bare :root", token)
+		}
+	}
+
+	// The dark media query must not beat an explicit light choice.
+	if !strings.Contains(css, `:root:not([data-theme="light"])`) {
+		t.Error("the dark media query is not guarded against an explicit light theme")
+	}
+	// The toggle must win in the other direction too.
+	if !strings.Contains(css, `:root[data-theme="dark"]`) {
+		t.Error("there is no explicit dark theme block")
+	}
+	// A transparent body borrows the host's ground.
+	if !strings.Contains(css, "background: var(--bg)") {
+		t.Error("body does not paint an explicit background token")
+	}
+}
+```
 
 - [ ] **Step 6: Run the tests**
 
 Run: `go test ./internal/server/... -v`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Check it against the approved design**
+
+Run: `go run . --fake --config=flashcart.toml.example --listen=:8474 serve`
+
+Step through every scenario in the dropdown and compare against the approved mockup. Check in both light and dark, and at a narrow viewport where the tree grid collapses to one column. Confirm specifically:
+
+- BIOS shows only `↓`, Saves only `↑`, ROMs shows both directions
+- the five passes are listed and dimmed before any run
+- the drift block is bordered in red, and its button stays disabled until a row is ticked
+- the offline scenario reads as normal rather than as an error
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add internal/server/assets/ internal/server/server_test.go
 git commit -m "Add embedded single-page UI
 
-Status pill, per-tree cards, live progress bars over SSE, and a drift
-panel that requires an explicit tick plus confirmation before deleting."
+Direction-forward manifest: each tree renders one row per pass with an
+explicit arrow, so the ROMs content-pull/metadata-push split is visible
+at a glance. Drift is quarantined behind an explicit tick and confirm."
 ```
 
 ---
