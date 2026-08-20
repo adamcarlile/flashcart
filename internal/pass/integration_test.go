@@ -162,12 +162,21 @@ func TestIgnoredPathsNeverMove(t *testing.T) {
 	bin := requireRsync(t)
 	rels := fixturePaths(t)
 
+	// Filter to only non-ignored paths so we can check that ignored paths
+	// are never introduced to either side during the sync.
+	var nonIgnored []string
+	for _, rel := range rels {
+		if paths.Classify(rel) != paths.ClassIgnored {
+			nonIgnored = append(nonIgnored, rel)
+		}
+	}
+
 	ex := runner.NewExec(bin)
 	events := make(chan runner.Event, 1024)
 
 	freshNAS := t.TempDir()
 	freshLocal := t.TempDir()
-	buildTree(t, freshNAS, rels)
+	buildTree(t, freshNAS, nonIgnored)
 
 	for _, p := range pass.Passes(cfgFor(t, freshLocal), nas.Mounts{Roms: freshNAS}) {
 		if p.Tree != "roms" {
@@ -180,7 +189,12 @@ func TestIgnoredPathsNeverMove(t *testing.T) {
 
 	for rel := range walkRel(t, freshLocal) {
 		if paths.Classify(rel) == paths.ClassIgnored {
-			t.Errorf("ignored path was transferred: %q", rel)
+			t.Errorf("ignored path was transferred to local: %q", rel)
+		}
+	}
+	for rel := range walkRel(t, freshNAS) {
+		if paths.Classify(rel) == paths.ClassIgnored {
+			t.Errorf("ignored path was transferred to NAS: %q", rel)
 		}
 	}
 }

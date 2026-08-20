@@ -10,6 +10,8 @@ snes/videos/ActRaiser (USA)-video.mp4
 snes/manuals/ActRaiser (USA)-manual.pdf
 ps3/God of War Collection.ps3/USRDIR/EBOOT.BIN
 ps3/Skate 3.ps3/PS3_GAME/ICON0.PNG
+ps3/Skate 3.ps3/images/ICON1.PNG
+ps3/Skate 3.ps3/gamelist.xml
 ps3/Tiger Woods PGA Tour 14.ps3/USRDIR/data.psarc
 ps3/gamelist.xml
 ports/main/game.dat
