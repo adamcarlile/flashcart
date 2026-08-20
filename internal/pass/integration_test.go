@@ -161,40 +161,71 @@ func TestMetadataPushMatchesClassifier(t *testing.T) {
 func TestIgnoredPathsNeverMove(t *testing.T) {
 	bin := requireRsync(t)
 	rels := fixturePaths(t)
-
-	// Filter to only non-ignored paths so we can check that ignored paths
-	// are never introduced to either side during the sync.
-	var nonIgnored []string
-	for _, rel := range rels {
-		if paths.Classify(rel) != paths.ClassIgnored {
-			nonIgnored = append(nonIgnored, rel)
-		}
-	}
-
 	ex := runner.NewExec(bin)
 	events := make(chan runner.Event, 1024)
 
-	freshNAS := t.TempDir()
-	freshLocal := t.TempDir()
-	buildTree(t, freshNAS, nonIgnored)
+	// Phase 1: Pull direction. Build NAS with full fixture including ignored paths.
+	// Leave local empty. Pull passes must not deliver any ignored paths to local.
+	{
+		nasRoot := t.TempDir()
+		localRoot := t.TempDir()
+		buildTree(t, nasRoot, rels)
 
-	for _, p := range pass.Passes(cfgFor(t, freshLocal), nas.Mounts{Roms: freshNAS}) {
-		if p.Tree != "roms" {
-			continue
+		for _, p := range pass.Passes(cfgFor(t, localRoot), nas.Mounts{Roms: nasRoot}) {
+			if p.Tree != "roms" {
+				continue
+			}
+			if _, err := ex.Run(context.Background(), p, events); err != nil {
+				t.Fatalf("pull phase %s: %v", p.ID, err)
+			}
 		}
+
+		for rel := range walkRel(t, localRoot) {
+			if paths.Classify(rel) == paths.ClassIgnored {
+				t.Errorf("pull phase: ignored path reached local: %q", rel)
+			}
+		}
+	}
+
+	// Phase 2: Push direction. Seed local with genuine metadata plus ignored paths.
+	// Push must transfer metadata to NAS but never transfer ignored paths.
+	{
+		nasRoot := t.TempDir()
+		localRoot := t.TempDir()
+
+		// Genuine metadata that should push: system gamelists and image metadata.
+		buildTree(t, localRoot, []string{
+			"snes/gamelist.xml",
+			"snes/images/ActRaiser-image.png",
+			"ps3/gamelist.xml",
+		})
+
+		// Ignored paths that must not push: Synology indexer and partial transfer dir.
+		buildTree(t, localRoot, []string{
+			"snes/@eaDir/ActRaiser (USA).zip@SynoResource",
+			"snes/images/@eaDir/ActRaiser-image.png@SynoResource",
+			"snes/.flashcart-partial/ActRaiser (USA).zip",
+		})
+
+		// Run only the metadata push pass, since it tests the push direction specifically.
+		ps := pass.Passes(cfgFor(t, localRoot), nas.Mounts{Roms: nasRoot})
+		p := passByID(ps, "roms-metadata-push")
 		if _, err := ex.Run(context.Background(), p, events); err != nil {
-			t.Fatalf("%s: %v", p.ID, err)
+			t.Fatalf("push phase: %v", err)
 		}
-	}
 
-	for rel := range walkRel(t, freshLocal) {
-		if paths.Classify(rel) == paths.ClassIgnored {
-			t.Errorf("ignored path was transferred to local: %q", rel)
+		// Assert: no ignored paths reached NAS.
+		for rel := range walkRel(t, nasRoot) {
+			if paths.Classify(rel) == paths.ClassIgnored {
+				t.Errorf("push phase: ignored path reached NAS: %q", rel)
+			}
 		}
-	}
-	for rel := range walkRel(t, freshNAS) {
-		if paths.Classify(rel) == paths.ClassIgnored {
-			t.Errorf("ignored path was transferred to NAS: %q", rel)
+
+		// Assert: genuine metadata did arrive (so we're not just filtering everything).
+		for _, want := range []string{"snes/gamelist.xml", "snes/images/ActRaiser-image.png", "ps3/gamelist.xml"} {
+			if !walkRel(t, nasRoot)[want] {
+				t.Errorf("push phase: genuine metadata did not arrive: %q", want)
+			}
 		}
 	}
 }
