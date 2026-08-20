@@ -115,13 +115,13 @@ func (n *NFS) Mount(ctx context.Context) (Mounts, func() error, error) {
 
 		out, err := n.runMount(ctx, opts, src, target)
 		if err != nil {
-			cleanupErr := unmount()
+			_ = unmount() // Skip reporting cleanup error
 			exit := 0
 			var ee *exec.ExitError
 			if errors.As(err, &ee) {
 				exit = ee.ExitCode()
 			}
-			return Mounts{}, func() error { return nil }, errors.Join(fmt.Errorf("mount %s: %w", s.name, ClassifyMountError(string(out), exit)), cleanupErr)
+			return Mounts{}, func() error { return nil }, fmt.Errorf("mount %s: %w", s.name, ClassifyMountError(string(out), exit))
 		}
 		mounted = append(mounted, target)
 
