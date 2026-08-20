@@ -63,21 +63,29 @@ func TestExecDryRunAndRun(t *testing.T) {
 	dstDir := t.TempDir()
 
 	// Create test files in source. Include:
-	// - Regular files
+	// - Regular files (at least 1MB each to ensure rsync reports progress)
 	// - A file with a pipe character in the name
 	// - A file with an ampersand and comma in the name
-	testFiles := map[string]string{
-		"file1.txt":              "content1",
-		"file2.bin":              "content2",
-		"Weird | Name.zip":       "pipe character",
-		"Title, Author & More.md": "special chars",
+	// Create 1MB of content for files that should trigger progress reporting.
+	oneMB := make([]byte, 1024*1024)
+	for i := range oneMB {
+		oneMB[i] = byte(i % 256)
 	}
 
+	testFiles := map[string][]byte{
+		"file1.txt":              oneMB,
+		"file2.bin":              oneMB,
+		"Weird | Name.zip":       oneMB,
+		"Title, Author & More.md": oneMB,
+	}
+
+	totalExpectedBytes := int64(0)
 	for name, content := range testFiles {
 		path := filepath.Join(srcDir, name)
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(path, content, 0644); err != nil {
 			t.Fatalf("failed to create test file %q: %v", name, err)
 		}
+		totalExpectedBytes += int64(len(content))
 	}
 
 	// Create one file only in destination (will be reported as deletion).
@@ -131,15 +139,25 @@ func TestExecDryRunAndRun(t *testing.T) {
 	}
 
 	// Verify TransferBytes counts only regular files (second flag char = 'f').
-	// Directories would have second flag char = 'd'.
+	// Directories would have second flag char = 'd'. Assert exact total to prove
+	// directories contribute zero bytes.
 	regularFileCount := 0
+	calculatedBytes := int64(0)
 	for _, ch := range dryResult.Changes {
 		if len(ch.Itemize) > 1 && ch.Itemize[1] == 'f' {
 			regularFileCount++
+			calculatedBytes += ch.Size
 		}
 	}
 	if regularFileCount == 0 {
 		t.Errorf("DryRun found no regular files")
+	}
+	if dryResult.TransferBytes != totalExpectedBytes {
+		t.Errorf("TransferBytes = %d, want %d (expected %d regular files, got %d)",
+			dryResult.TransferBytes, totalExpectedBytes, len(testFiles), regularFileCount)
+	}
+	if calculatedBytes != totalExpectedBytes {
+		t.Errorf("sum of regular file sizes = %d, want %d", calculatedBytes, totalExpectedBytes)
 	}
 
 	// Verify deletion is reported.
@@ -181,7 +199,7 @@ func TestExecDryRunAndRun(t *testing.T) {
 checkEvents:
 	// A successful rsync should emit at least one progress event.
 	if len(events) == 0 {
-		t.Logf("warning: Run emitted no progress events (small transfer or very fast rsync)")
+		t.Errorf("Run emitted no progress events")
 	}
 	for _, ev := range events {
 		if ev.Percent < 0 || ev.Percent > 100 {

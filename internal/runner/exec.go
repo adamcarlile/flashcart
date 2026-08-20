@@ -66,11 +66,12 @@ func (e *Exec) Run(ctx context.Context, p pass.Pass, events chan<- Event) (Resul
 			}
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return Result{PassID: p.ID}, fmt.Errorf("rsync %s: %w", p.ID, err)
-	}
+	scanErr := sc.Err()
 	if err := cmd.Wait(); err != nil {
 		return Result{PassID: p.ID}, fmt.Errorf("rsync %s: %w: %s", p.ID, err, strings.TrimSpace(stderr.String()))
+	}
+	if scanErr != nil {
+		return Result{PassID: p.ID}, fmt.Errorf("rsync %s: %w", p.ID, scanErr)
 	}
 	return Result{PassID: p.ID}, nil
 }
