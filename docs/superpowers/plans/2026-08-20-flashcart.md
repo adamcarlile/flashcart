@@ -68,6 +68,14 @@ go mod init github.com/adamcarlile/flashcart
 go get github.com/BurntSushi/toml@latest
 ```
 
+`go mod init` stamps the local toolchain's version into `go.mod`. CI pins Go
+1.22, so pin the module to match, and confirm it:
+
+```bash
+go mod edit -go=1.22
+grep '^go ' go.mod    # must read: go 1.22
+```
+
 - [ ] **Step 2: Write the failing test**
 
 Create `internal/config/config_test.go`:
@@ -361,7 +369,6 @@ snes/images/ActRaiser (USA)-marquee.png
 snes/images/ActRaiser (USA)-thumb.png
 snes/videos/ActRaiser (USA)-video.mp4
 snes/manuals/ActRaiser (USA)-manual.pdf
-ps3/God of War Collection.ps3
 ps3/God of War Collection.ps3/USRDIR/EBOOT.BIN
 ps3/Skate 3.ps3/PS3_GAME/ICON0.PNG
 ps3/Tiger Woods PGA Tour 14.ps3/USRDIR/data.psarc

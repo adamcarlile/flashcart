@@ -1,3 +1,4 @@
 flashcart
 *.test
 dist/
+.superpowers/
