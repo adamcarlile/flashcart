@@ -7,6 +7,7 @@ import (
 
 	"github.com/adamcarlile/flashcart/internal/config"
 	"github.com/adamcarlile/flashcart/internal/nas"
+	"github.com/adamcarlile/flashcart/internal/paths"
 )
 
 func testConfig() *config.Config {
@@ -144,6 +145,120 @@ func TestArgsEndWithSourceThenDestination(t *testing.T) {
 			if args[len(args)-2] != p.Src || args[len(args)-1] != p.Dst {
 				t.Errorf("%s %s: args must end Src then Dst, got %v", p.ID, name, args[len(args)-2:])
 			}
+		}
+	}
+}
+
+// TestAllEndpointMappings verifies exact Src/Dst and Direction for all five passes.
+// Catching swapped endpoints (writing box BIOS to NAS) or wrong directions is critical
+// to prevent silent data destruction.
+func TestAllEndpointMappings(t *testing.T) {
+	ps := Passes(testConfig(), testMounts())
+	byID := make(map[string]Pass)
+	for _, p := range ps {
+		byID[p.ID] = p
+	}
+
+	tests := []struct {
+		id        string
+		wantSrc   string
+		wantDst   string
+		wantDir   Direction
+	}{
+		{
+			id:      "bios-pull",
+			wantSrc: "/var/run/flashcart/nas/bios/",
+			wantDst: "/userdata/bios/",
+			wantDir: DirPull,
+		},
+		{
+			id:      "roms-content-pull",
+			wantSrc: "/var/run/flashcart/nas/roms/",
+			wantDst: "/userdata/roms/",
+			wantDir: DirPull,
+		},
+		{
+			id:      "roms-metadata-pull",
+			wantSrc: "/var/run/flashcart/nas/roms/",
+			wantDst: "/userdata/roms/",
+			wantDir: DirPull,
+		},
+		{
+			id:      "roms-metadata-push",
+			wantSrc: "/userdata/roms/",
+			wantDst: "/var/run/flashcart/nas/roms/",
+			wantDir: DirPush,
+		},
+		{
+			id:      "saves-push",
+			wantSrc: "/userdata/saves/",
+			wantDst: "/var/run/flashcart/nas/saves/",
+			wantDir: DirPush,
+		},
+	}
+
+	for _, tc := range tests {
+		p, ok := byID[tc.id]
+		if !ok {
+			t.Errorf("pass %q not found", tc.id)
+			continue
+		}
+		if p.Src != tc.wantSrc {
+			t.Errorf("%s: Src = %q, want %q", tc.id, p.Src, tc.wantSrc)
+		}
+		if p.Dst != tc.wantDst {
+			t.Errorf("%s: Dst = %q, want %q", tc.id, p.Dst, tc.wantDst)
+		}
+		if p.Direction != tc.wantDir {
+			t.Errorf("%s: Direction = %v, want %v", tc.id, p.Direction, tc.wantDir)
+		}
+	}
+}
+
+// TestAllFilterSets verifies each pass has the correct filter set.
+// Swapping ContentFilters and MetadataFilters, or dropping a filter call,
+// would compile and pass without this test.
+func TestAllFilterSets(t *testing.T) {
+	ps := Passes(testConfig(), testMounts())
+	byID := make(map[string]Pass)
+	for _, p := range ps {
+		byID[p.ID] = p
+	}
+
+	tests := []struct {
+		id         string
+		wantFilters []string
+	}{
+		{
+			id:          "bios-pull",
+			wantFilters: paths.PlainFilters(),
+		},
+		{
+			id:          "roms-content-pull",
+			wantFilters: paths.ContentFilters(),
+		},
+		{
+			id:          "roms-metadata-pull",
+			wantFilters: paths.MetadataFilters(),
+		},
+		{
+			id:          "roms-metadata-push",
+			wantFilters: paths.MetadataFilters(),
+		},
+		{
+			id:          "saves-push",
+			wantFilters: paths.PlainFilters(),
+		},
+	}
+
+	for _, tc := range tests {
+		p, ok := byID[tc.id]
+		if !ok {
+			t.Errorf("pass %q not found", tc.id)
+			continue
+		}
+		if !slices.Equal(p.Filters, tc.wantFilters) {
+			t.Errorf("%s: Filters = %v, want %v", tc.id, p.Filters, tc.wantFilters)
 		}
 	}
 }
