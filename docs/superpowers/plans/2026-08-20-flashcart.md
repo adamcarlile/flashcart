@@ -1125,7 +1125,7 @@ transfers can never carry it."
 
 **Interfaces:**
 - Consumes: `pass.Pass` (Task 4)
-- Produces: `runner.Change{Itemize string, Size int64, Path string, Deleting bool}`, `runner.Result{PassID string, Changes []Change, TransferBytes int64, Deletions []string}`, `runner.Event{PassID string, Percent int, Message string}`, `runner.Runner` interface with `DryRun(ctx, pass.Pass) (Result, error)` and `Run(ctx, pass.Pass, chan<- Event) (Result, error)`, `func runner.NewExec(binary string) *runner.Exec`, `func runner.ParseItemize(passID, out string) Result`, `func runner.ParseProgress(line string) (int, bool)`
+- Produces: `runner.Change{Itemize string, Size int64, Path string}`, `runner.Result{PassID string, Changes []Change, TransferBytes int64, Deletions []string}`, `runner.Event{PassID string, Percent int, Message string}`, `runner.Runner` interface with `DryRun(ctx, pass.Pass) (Result, error)` and `Run(ctx, pass.Pass, chan<- Event) (Result, error)`, `func runner.NewExec(binary string) *runner.Exec`, `func runner.ParseItemize(passID, out string) Result`, `func runner.ParseProgress(line string) (int, bool)`
 
 - [ ] **Step 1: Write the failing test**
 
