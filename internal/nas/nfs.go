@@ -1,0 +1,152 @@
+package nas
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/adamcarlile/flashcart/internal/config"
+)
+
+// Mount failure categories. They are distinguished because each needs a
+// different fix from the person reading the message.
+var (
+	ErrUnreachable   = errors.New("NAS unreachable")
+	ErrExportMissing = errors.New("export not found on the NAS")
+	ErrPermission    = errors.New("permission denied by the NAS")
+)
+
+// probeTimeout keeps the status endpoint fast enough to load in a car with
+// no network attached.
+const probeTimeout = time.Second
+
+// NFS mounts the three exports for the duration of a run and unmounts them
+// afterwards. Nothing at boot depends on the NAS existing.
+type NFS struct {
+	cfg *config.Config
+	// mountOpts are deliberately soft rather than hard: a NAS that vanishes
+	// mid-run must produce a readable error, not a wedged process.
+	mountOpts string
+}
+
+// NewNFS returns a Provider backed by real NFS mounts.
+func NewNFS(cfg *config.Config) *NFS {
+	return &NFS{
+		cfg:       cfg,
+		mountOpts: "soft,timeo=50,retrans=2,proto=tcp,vers=4.0",
+	}
+}
+
+var _ Provider = (*NFS)(nil)
+
+// Probe dials the NFS port. It mounts nothing, so it is safe and fast to
+// call on every page load.
+func (n *NFS) Probe(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	addr := net.JoinHostPort(n.cfg.NAS.Host, strconv.Itoa(n.cfg.NAS.Port))
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrUnreachable, addr, err)
+	}
+	return conn.Close()
+}
+
+type mountSpec struct {
+	name     string
+	export   string
+	readOnly bool
+}
+
+// Mount mounts all three exports and returns an unmount function that must
+// always be called, including on failure. BIOS is read-only because nothing
+// on the box ever writes to it.
+func (n *NFS) Mount(ctx context.Context) (Mounts, func() error, error) {
+	specs := []mountSpec{
+		{"roms", n.cfg.Trees.Roms.Export, false},
+		{"bios", n.cfg.Trees.Bios.Export, true},
+		{"saves", n.cfg.Trees.Saves.Export, false},
+	}
+
+	var mounted []string
+	unmount := func() error {
+		var firstErr error
+		// Unmount in reverse order.
+		for i := len(mounted) - 1; i >= 0; i-- {
+			if err := exec.Command("umount", mounted[i]).Run(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("umount %s: %w", mounted[i], err)
+			}
+		}
+		return firstErr
+	}
+
+	var m Mounts
+	for _, s := range specs {
+		target := filepath.Join(n.cfg.NAS.MountRoot, s.name)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			unmount()
+			return Mounts{}, func() error { return nil }, fmt.Errorf("create mount point %s: %w", target, err)
+		}
+
+		opts := n.mountOpts
+		if s.readOnly {
+			opts = "ro," + opts
+		}
+		src := n.cfg.NAS.Host + ":" + s.export
+
+		out, err := exec.CommandContext(ctx, "mount", "-t", "nfs4", "-o", opts, src, target).CombinedOutput()
+		if err != nil {
+			unmount()
+			exit := 0
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				exit = ee.ExitCode()
+			}
+			return Mounts{}, func() error { return nil }, fmt.Errorf("mount %s: %w", s.name, ClassifyMountError(string(out), exit))
+		}
+		mounted = append(mounted, target)
+
+		switch s.name {
+		case "roms":
+			m.Roms = target
+		case "bios":
+			m.Bios = target
+		case "saves":
+			m.Saves = target
+		}
+	}
+
+	return m, unmount, nil
+}
+
+// ClassifyMountError maps mount.nfs4 stderr onto a category, preserving the
+// original text so an unrecognised failure is still actionable.
+func ClassifyMountError(stderr string, exit int) error {
+	s := strings.ToLower(stderr)
+	trimmed := strings.TrimSpace(stderr)
+
+	switch {
+	case strings.Contains(s, "timed out"),
+		strings.Contains(s, "no route to host"),
+		strings.Contains(s, "connection refused"),
+		strings.Contains(s, "network is unreachable"):
+		return fmt.Errorf("%w: %s", ErrUnreachable, trimmed)
+	case strings.Contains(s, "no such file or directory"),
+		strings.Contains(s, "does not exist"):
+		return fmt.Errorf("%w: %s", ErrExportMissing, trimmed)
+	case strings.Contains(s, "access denied"),
+		strings.Contains(s, "permission denied"),
+		strings.Contains(s, "operation not permitted"):
+		return fmt.Errorf("%w: %s", ErrPermission, trimmed)
+	}
+	return fmt.Errorf("mount failed (exit %d): %s", exit, trimmed)
+}
