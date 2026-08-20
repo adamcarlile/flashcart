@@ -81,6 +81,9 @@ rsync 3.3.0 is present at `/usr/bin/rsync`. `batocera-services` exists;
 3. **Manual trigger from a small web UI**, not automatic sync.
 4. **The box is the sole writer of saves** (confirmed with the user), so saves need no
    merge logic.
+5. **A fake mode is a first-class requirement**, so the UI can be built and exercised on
+   a development machine with no NAS, no Batocera box and no 93 G of data. See
+   "Fake mode".
 
 ## Sync model
 
@@ -169,6 +172,7 @@ output) but becomes a documented rule.
 | `nas` | Reachability probe, mount and unmount lifecycle |
 | `plan` | Dry-run every pass, parse `--itemize-changes` into changesets and drift lists |
 | `sync` | Execute passes for real, stream progress |
+| `fake` | Scripted backend implementing the same seams, for UI development and tests |
 | `drift` | Delete explicitly confirmed paths, and nothing else |
 | `server` | HTTP, SSE, embedded vanilla-JS UI |
 | `service` | `batocera-services` install and uninstall |
@@ -213,6 +217,60 @@ Single page, no framework, no build step, embedded in the binary.
 - Plan and Sync buttons, single-flight so they cannot overlap
 - Live progress log with a per-pass bar
 - Collapsed drift panel with per-item checkboxes and a separate confirm button
+
+## Fake mode
+
+`flashcart --fake` runs the whole application against a scripted backend. No mounts, no
+rsync, no filesystem writes. Its purpose is to make the UI buildable and reviewable on a
+development machine, and to make the states that matter most reachable on demand.
+
+### The seam
+
+Two interfaces, satisfied by a real and a fake implementation:
+
+- `nas.Provider`: `Probe`, `Mount`, `Unmount`
+- `sync.Runner`: executes one pass, emitting progress events and returning a result
+
+Real code paths construct the real implementations; `--fake` constructs the fakes.
+Nothing above the seam knows which it has. `server`, `plan` and `drift` are therefore
+identical in both modes, which is what makes fake mode worth trusting: the UI is
+exercising the real code, only the far side of the seam is scripted.
+
+### Scenarios
+
+Selectable at startup with `--fake=<scenario>` and switchable live from a dev-only bar
+in the UI, so states can be compared without restarting:
+
+| Scenario | State |
+| --- | --- |
+| `seed` | Empty local tree, full NAS. Exercises the first run, ~93 G incoming, and must show zero drift |
+| `steady` | Small realistic delta: a handful of new ROMs, some saves to push |
+| `drift` | Populated drift lists in both directions, exercising the confirm flow |
+| `offline` | Probe fails. Sync disabled, status pill red |
+| `nospace` | Plan exceeds free space, refusal path |
+| `failure` | rsync fails partway through pass 2, exercising error surfacing and deferred unmount |
+
+Fixture data is derived from the real measured library, so the UI is laid out against
+232 systems, 24 gamelists and the actual size distribution rather than three toy rows.
+Byte counts and pass ordering match the real thing.
+
+Progress is simulated over wall-clock time rather than returning instantly, so SSE
+streaming, per-pass bars and the single-flight lock are genuinely exercised.
+
+### Guardrails
+
+- Fake mode is a command-line flag only, never a config file key, so it cannot be
+  enabled by editing a file on the box. The installed service script never passes it
+- The fake `sync.Runner` and `nas.Provider` have no filesystem or mount capability at
+  all. Their inability to touch real data is structural rather than a guarded branch
+- The UI shows a persistent, unmissable banner while in fake mode
+- `/api/status` reports the mode, so it is visible from outside the browser too
+
+### Second benefit
+
+The same fakes back the unit tests for `server`, `plan` and `drift`, so those tests need
+neither rsync nor temp directories. The real rsync integration tests stay focused on
+filter correctness, where actually running rsync is the point.
 
 ## Deployment
 
@@ -291,7 +349,9 @@ carnet's release cadence to the games box for maybe 30% common code.
 
 ## Testing
 
-No test requires the NAS or the Batocera box.
+No test requires the NAS or the Batocera box. `server`, `plan` and `drift` tests run
+against the fake backend described above; only the filter and rsync integration tests
+invoke a real rsync.
 
 **Filter classification tests** carry the highest value, using a fixture of real paths
 captured from the box:
