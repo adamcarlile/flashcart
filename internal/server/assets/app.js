@@ -20,6 +20,11 @@ const TREES = [
 
 const state = { status: null, plan: null, progress: {}, err: {}, busy: false };
 
+// Set by renderDrift() while a drift list is showing; re-checked whenever
+// state.busy changes so the delete button locks and unlocks with the rest
+// of the UI rather than staying stuck enabled through a sync.
+let refreshDriftGate = () => {};
+
 function humanBytes(n) {
   if (!n) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -107,7 +112,7 @@ function renderPasses() {
 function renderDrift() {
   const items = (state.plan?.trees || []).flatMap((t) => t.drift || []);
   $("drift-section").hidden = items.length === 0;
-  if (!items.length) return;
+  if (!items.length) { refreshDriftGate = () => {}; return; }
 
   $("drift-title").textContent = `Drift — ${items.length} path${items.length === 1 ? "" : "s"}`;
   $("drift-rows").innerHTML = items.map((d, i) => `
@@ -120,13 +125,14 @@ function renderDrift() {
   const boxes = () => [...$("drift-rows").querySelectorAll("input")];
   const update = () => {
     const n = boxes().filter((b) => b.checked).length;
-    $("drift-btn").disabled = n === 0;
+    $("drift-btn").disabled = n === 0 || state.busy;
     $("drift-note").textContent = n === 0
       ? "Nothing ticked"
       : `${n} path${n === 1 ? "" : "s"} will be permanently deleted`;
   };
   boxes().forEach((b) => b.addEventListener("change", update));
   update();
+  refreshDriftGate = update;
 
   $("drift-btn").onclick = async () => {
     const chosen = boxes().filter((b) => b.checked).map((b) => items[+b.dataset.i]);
@@ -173,6 +179,8 @@ function renderControls() {
   } else {
     $("act-note").textContent = "";
   }
+
+  refreshDriftGate();
 }
 
 /* ── data ──────────────────────────────────────────────────── */
@@ -296,7 +304,14 @@ function connectEvents() {
       refreshStatus();
     }
   };
-  es.onerror = () => log("t", "event stream interrupted, retrying");
+  es.onerror = () => {
+    // A reconnect is a NEW subscriber; the hub replays nothing, so a "done"
+    // message dropped in the gap is lost for good. /api/status carries the
+    // authoritative busy flag, so refresh it immediately rather than waiting
+    // up to 15s for the polling interval to notice the sync already ended.
+    log("t", "event stream interrupted, retrying");
+    refreshStatus();
+  };
 }
 
 $("plan-btn").addEventListener("click", doPlan);
