@@ -10,7 +10,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +26,7 @@ import (
 	"github.com/adamcarlile/flashcart/internal/server"
 	"github.com/adamcarlile/flashcart/internal/server/assets"
 	"github.com/adamcarlile/flashcart/internal/service"
+	"github.com/adamcarlile/flashcart/internal/update"
 )
 
 // DefaultConfigPath is under /userdata because the Batocera root filesystem
@@ -237,7 +241,60 @@ func serve(o Options, stdout io.Writer) error {
 	}
 }
 
-// selfUpdate is implemented in Task 16.
+// Repo is the GitHub repository self-update reads releases from.
+const Repo = "adamcarlile/flashcart"
+
 func selfUpdate(stdout io.Writer) error {
-	return errors.New("self-update is not available in this build")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	rel, err := update.Latest(ctx, Repo)
+	if err != nil {
+		return err
+	}
+	if strings.TrimPrefix(rel.Tag, "v") == strings.TrimPrefix(buildinfo.Version, "v") {
+		fmt.Fprintf(stdout, "already on %s\n", buildinfo.Version)
+		return nil
+	}
+
+	asset := fmt.Sprintf("flashcart_%s_%s", runtime.GOOS, runtime.GOARCH)
+	binURL, ok := rel.Assets[asset]
+	if !ok {
+		return fmt.Errorf("release %s has no asset %q", rel.Tag, asset)
+	}
+	sumsURL, ok := rel.Assets["checksums.txt"]
+	if !ok {
+		return fmt.Errorf("release %s has no checksums.txt", rel.Tag)
+	}
+
+	fmt.Fprintf(stdout, "downloading %s (%s)\n", asset, rel.Tag)
+	sumsBody, err := update.Fetch(ctx, sumsURL)
+	if err != nil {
+		return err
+	}
+	payload, err := update.Fetch(ctx, binURL)
+	if err != nil {
+		return err
+	}
+
+	sums := update.ParseChecksums(string(sumsBody))
+	want, ok := sums[asset]
+	if !ok {
+		return fmt.Errorf("checksums.txt has no entry for %q", asset)
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := update.VerifyAndSwap(self, payload, want); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "updated to %s\n", rel.Tag)
+
+	if _, err := exec.LookPath("batocera-services"); err == nil {
+		exec.Command("batocera-services", "restart", service.Name).Run()
+		fmt.Fprintln(stdout, "service restarted")
+	}
+	return nil
 }

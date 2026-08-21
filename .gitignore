@@ -1,4 +1,4 @@
-flashcart
+/flashcart
+/dist/
 *.test
-dist/
 .superpowers/

@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # The pass package runs real rsync to prove the filters agree with the
+      # classifier, so it must be installed.
+      - run: sudo apt-get update && sudo apt-get install -y rsync
+      - run: go vet ./...
+      - run: go test ./... -race

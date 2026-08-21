@@ -1,0 +1,23 @@
+version: 2
+
+builds:
+  - id: flashcart
+    main: .
+    binary: flashcart
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/adamcarlile/flashcart/internal/buildinfo.Version={{.Version}}
+
+archives:
+  - id: bare
+    formats: [binary]
+    name_template: "flashcart_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: false
