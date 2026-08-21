@@ -1726,7 +1726,7 @@ Runs real rsync over a fixture tree built from paths captured on the box."
 
 **Files:**
 - Create: `internal/nas/nfs.go`, `internal/nas/nfs_test.go`
-- Modify: `internal/nas/nas.go` (add `MountError`)
+- Modify: `internal/nas/nas.go` — no change needed; the sentinel errors live in `nfs.go`
 
 **Interfaces:**
 - Consumes: `config.Config` (Task 1), `nas.Mounts`, `nas.Provider` (Task 4)
