@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flashcart</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=JetBrains+Mono:wght@400;500;700&family=Public+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="fake-bar" id="fake-bar" hidden>
+  <span class="fake-tag">Fake mode</span>
+  <span class="fake-note">Nothing is mounted and no data moves.</span>
+  <label class="fake-pick">Scenario
+    <select id="scenario"></select>
+  </label>
+</div>
+
+<div class="app">
+  <header>
+    <div>
+      <h1 class="wordmark">flashcart</h1>
+      <div class="tagline" id="tagline"></div>
+    </div>
+    <div class="head-right">
+      <span class="pill" id="nas-pill">checking</span>
+      <div class="stamp">
+        <div id="last-sync">Never synced</div>
+        <div id="version"></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <section>
+    <div class="section-head">
+      <h2>Manifest</h2>
+      <span class="hint">&#8595; from NAS &middot; &#8593; to NAS</span>
+    </div>
+    <div class="trees" id="trees"></div>
+  </section>
+
+  <div class="actions">
+    <button class="act primary" id="plan-btn">Plan</button>
+    <button class="act" id="sync-btn">Sync</button>
+    <span class="act-note" id="act-note"></span>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Passes</h2>
+      <span class="hint">metadata is pulled before it is pushed, so an empty box is seeded</span>
+    </div>
+    <div class="passes" id="passes"></div>
+  </section>
+
+  <section id="drift-section" hidden>
+    <div class="drift">
+      <div class="drift-head">
+        <h2 id="drift-title">Drift</h2>
+        <p>Present on the destination, absent from the source. Deletion is permanent and only ticked rows are removed.</p>
+      </div>
+      <div class="drift-rows" id="drift-rows"></div>
+      <div class="drift-foot">
+        <button class="act danger" id="drift-btn" disabled>Delete ticked</button>
+        <span class="act-note" id="drift-note">Nothing ticked</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Log</h2></div>
+    <div class="log" id="log"></div>
+  </section>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

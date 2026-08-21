@@ -15,6 +15,7 @@ import (
 	"github.com/adamcarlile/flashcart/internal/config"
 	"github.com/adamcarlile/flashcart/internal/fake"
 	"github.com/adamcarlile/flashcart/internal/plan"
+	"github.com/adamcarlile/flashcart/internal/server/assets"
 )
 
 func testAssets() fs.FS {
@@ -394,5 +395,64 @@ func TestIndexIsServed(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "flashcart") {
 		t.Errorf("index body = %q", w.Body.String())
+	}
+}
+
+func TestEmbeddedAssetsAreComplete(t *testing.T) {
+	for _, name := range []string{"index.html", "style.css", "app.js"} {
+		b, err := fs.ReadFile(assets.FS, name)
+		if err != nil {
+			t.Fatalf("embedded asset %s: %v", name, err)
+		}
+		if len(b) == 0 {
+			t.Errorf("embedded asset %s is empty", name)
+		}
+	}
+}
+
+// The UI must never let fake mode pass unnoticed.
+func TestIndexCarriesFakeBanner(t *testing.T) {
+	b, err := fs.ReadFile(assets.FS, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "fake-bar") {
+		t.Error("index.html has no fake mode banner")
+	}
+}
+
+// Every colour must be reachable in the un-stamped theme state, where only
+// prefers-color-scheme applies. A token defined solely inside a media or
+// [data-theme] block renders one theme's text on the other theme's ground.
+func TestStylesheetDefinesEveryTokenAtRoot(t *testing.T) {
+	b, err := fs.ReadFile(assets.FS, "style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(b)
+
+	bare := css[strings.Index(css, ":root {"):strings.Index(css, "@media (prefers-color-scheme: dark)")]
+	for _, token := range []string{
+		"--bg:", "--surface:", "--surface-2:", "--line:", "--line-soft:",
+		"--text:", "--dim:", "--faint:", "--accent:", "--accent-ink:",
+		"--accent-soft:", "--ok:", "--ok-soft:", "--warn:", "--warn-soft:",
+		"--danger:", "--danger-soft:", "--shadow:",
+	} {
+		if !strings.Contains(bare, token) {
+			t.Errorf("token %s is not defined on bare :root", token)
+		}
+	}
+
+	// The dark media query must not beat an explicit light choice.
+	if !strings.Contains(css, `:root:not([data-theme="light"])`) {
+		t.Error("the dark media query is not guarded against an explicit light theme")
+	}
+	// The toggle must win in the other direction too.
+	if !strings.Contains(css, `:root[data-theme="dark"]`) {
+		t.Error("there is no explicit dark theme block")
+	}
+	// A transparent body borrows the host's ground.
+	if !strings.Contains(css, "background: var(--bg)") {
+		t.Error("body does not paint an explicit background token")
 	}
 }
