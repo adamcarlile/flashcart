@@ -126,3 +126,25 @@ local = "/userdata/saves"
 		t.Fatalf("Fake = %q: a config file enabled fake mode", o.Fake)
 	}
 }
+
+func TestHelpFlagPrintsUsageAndExitsZero(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run([]string{"--help"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	if out.Len() == 0 {
+		t.Fatal("--help printed nothing to stdout")
+	}
+	for _, want := range []string{
+		"serve", "version", "install-service", "uninstall-service", "update",
+		"--fake", "--config", "--listen",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("usage does not mention %q:\n%s", want, out.String())
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("--help wrote to stderr: %s", errOut.String())
+	}
+}

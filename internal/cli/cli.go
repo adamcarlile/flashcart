@@ -3,11 +3,15 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/adamcarlile/flashcart/internal/buildinfo"
@@ -42,6 +46,29 @@ func (f *fakeValue) Set(s string) error {
 	return nil
 }
 func (f *fakeValue) IsBoolFlag() bool { return true }
+
+// usage is printed for --help. fs.SetOutput(io.Discard) in Parse silences
+// the flag package's own usage printer along with its error text, so this
+// is the only usage text a user ever sees.
+const usage = `flashcart maintains a local mirror of a ROM library that normally lives on an NFS share.
+
+Usage:
+  flashcart [flags] [command]
+
+Commands:
+  serve               run the sync server (default)
+  version              print the version and exit
+  install-service      install and enable the box's service
+  uninstall-service    remove the service
+  update               self-update to the latest release
+
+Flags:
+  --config string   path to flashcart.toml (default "` + DefaultConfigPath + `")
+  --listen string   override the configured listen address
+  --rsync string    path to the rsync binary (default "rsync")
+  --fake[=scenario] run against the scripted fake backend instead of a real NAS
+                    (bare --fake picks the "` + defaultFakeScenario + `" scenario)
+`
 
 var commands = map[string]bool{
 	"serve":             true,
@@ -101,6 +128,10 @@ func Parse(args []string) (Options, error) {
 func Run(args []string, stdout, stderr io.Writer) int {
 	o, err := Parse(args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, usage)
+			return 0
+		}
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
@@ -166,17 +197,44 @@ func serve(o Options, stdout io.Writer) error {
 		opts.Free = plan.FreeSpace
 	}
 
+	app := server.New(opts)
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           server.New(opts),
+		Handler:           app,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	// Without this, Go terminates on SIGTERM immediately: the rsync child
+	// of an in-flight sync is never signalled (it keeps writing, detached
+	// from any supervisor), the NFS mount is never released (held until
+	// reboot, exactly the leak withMounts exists to prevent), and the
+	// restarted process has no idea an orphaned rsync is still running, so
+	// a fresh sync could run a second rsync over the same tree. An
+	// ordinary "flashcart update" reaches this path via a service restart.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
 	fmt.Fprintf(stdout, "flashcart %s listening on %s\n", buildinfo.Version, cfg.Server.Listen)
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		fmt.Fprintln(stdout, "flashcart: shutting down")
+		// Cancel background work (an in-flight sync) first, so its rsync
+		// child is killed and its deferred unmount runs, before the HTTP
+		// server stops accepting the SSE/status requests that surface
+		// that shutdown to a browser.
+		app.Shutdown()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
 	}
-	return nil
 }
 
 // selfUpdate is implemented in Task 16.

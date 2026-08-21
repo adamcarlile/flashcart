@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/adamcarlile/flashcart/internal/config"
 	"github.com/adamcarlile/flashcart/internal/fake"
+	"github.com/adamcarlile/flashcart/internal/nas"
 	"github.com/adamcarlile/flashcart/internal/plan"
 	"github.com/adamcarlile/flashcart/internal/server/assets"
 )
@@ -455,4 +457,90 @@ func TestStylesheetDefinesEveryTokenAtRoot(t *testing.T) {
 	if !strings.Contains(css, "background: var(--bg)") {
 		t.Error("body does not paint an explicit background token")
 	}
+}
+
+// recordingProvider wraps a nas.Provider and records when its unmount
+// closure actually runs, so a test can tell a mount was genuinely released
+// rather than merely that the request handler returned.
+type recordingProvider struct {
+	inner     nas.Provider
+	unmounted chan struct{}
+}
+
+func (p *recordingProvider) Probe(ctx context.Context) error { return p.inner.Probe(ctx) }
+
+func (p *recordingProvider) Mount(ctx context.Context) (nas.Mounts, func() error, error) {
+	m, unmount, err := p.inner.Mount(ctx)
+	if err != nil {
+		return m, unmount, err
+	}
+	return m, func() error {
+		err := unmount()
+		close(p.unmounted)
+		return err
+	}, nil
+}
+
+// TestShutdownCancelsInFlightSyncAndReleasesMounts pins the fix for a
+// restart-during-sync leak: without a cancellable context reaching the sync
+// goroutine, an orphaned rsync keeps running and the NFS mount is held
+// until reboot (Task 7's whole reason for existing). Delay is set to a real
+// duration so Shutdown genuinely lands mid-run rather than after it has
+// already finished.
+func TestShutdownCancelsInFlightSyncAndReleasesMounts(t *testing.T) {
+	b, err := fake.New(fake.ScenarioSteady)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Delay = 200 * time.Millisecond
+
+	rp := &recordingProvider{inner: b, unmounted: make(chan struct{})}
+
+	cfg := &config.Config{
+		NAS: config.NAS{Host: "fake", Port: 2049, MountRoot: "/mnt"},
+		Trees: config.Trees{
+			Roms:  config.Tree{Export: "/e/roms", Local: t.TempDir()},
+			Bios:  config.Tree{Export: "/e/bios", Local: t.TempDir()},
+			Saves: config.Tree{Export: "/e/saves", Local: t.TempDir()},
+		},
+		SpaceMarginPercent: 10,
+	}
+	app := New(Options{
+		Cfg: cfg, Provider: rp, Runner: b, Free: b.FreeSpace,
+		Fake: b, Version: "test", Assets: testAssets(),
+	})
+
+	if w := do(t, app, http.MethodPost, "/api/sync", ""); w.Code != http.StatusAccepted {
+		t.Fatalf("sync status = %d", w.Code)
+	}
+
+	// Give the background goroutine time to mount and start the first pass
+	// before shutting down, so cancellation genuinely lands mid-run.
+	time.Sleep(20 * time.Millisecond)
+
+	app.Shutdown()
+
+	select {
+	case <-rp.unmounted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mounts were never released after Shutdown")
+	}
+
+	// Releasing the mount is not enough on its own: confirm the sync
+	// actually stopped rather than continuing to run detached.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		w := do(t, app, http.MethodGet, "/api/status", "")
+		var got struct {
+			Busy bool `json:"busy"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.Busy {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("sync did not stop after Shutdown")
 }

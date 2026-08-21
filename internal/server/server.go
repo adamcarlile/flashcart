@@ -35,9 +35,11 @@ type Options struct {
 
 // App is the HTTP handler.
 type App struct {
-	opts Options
-	hub  *Hub
-	mux  *http.ServeMux
+	opts   Options
+	hub    *Hub
+	mux    *http.ServeMux
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu          sync.Mutex
 	busy        bool
@@ -59,7 +61,8 @@ type App struct {
 
 // New wires the routes.
 func New(o Options) *App {
-	a := &App{opts: o, hub: NewHub(), mux: http.NewServeMux()}
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &App{opts: o, hub: NewHub(), mux: http.NewServeMux(), ctx: ctx, cancel: cancel}
 
 	a.mux.Handle("GET /", http.FileServer(http.FS(o.Assets)))
 	a.mux.HandleFunc("GET /api/status", a.handleStatus)
@@ -77,6 +80,21 @@ func New(o Options) *App {
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) { a.mux.ServeHTTP(w, r) }
+
+// Shutdown cancels the context that background work (currently: an
+// in-flight sync) runs on. A sync outlives its originating HTTP request
+// deliberately, so it cannot be reached through request cancellation; this
+// is the only way to stop one from outside. Cancelling reaches rsync
+// itself (runner.Exec ties the child process's lifetime to this context via
+// exec.CommandContext) and still lets the deferred unmount in withMounts
+// run, because the sync's closure returns promptly once syncer.Run sees
+// ctx.Err() rather than being killed out from under it.
+//
+// Shutdown does not stop the HTTP server; callers are also expected to call
+// http.Server.Shutdown.
+func (a *App) Shutdown() {
+	a.cancel()
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -244,10 +262,15 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The run outlives the request: progress arrives over SSE.
+	// The run outlives the request: progress arrives over SSE. It runs on
+	// a.ctx rather than the request's context (which dies with the
+	// request) or context.Background() (which nothing could ever cancel):
+	// a.ctx is what Shutdown cancels on process termination, so the rsync
+	// child gets killed and the NFS mount gets released instead of being
+	// orphaned by an instant SIGTERM exit.
 	go func() {
 		defer a.release()
-		ctx := context.Background()
+		ctx := a.ctx
 
 		events := make(chan runner.Event, 256)
 		done := make(chan struct{})
