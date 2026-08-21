@@ -112,3 +112,48 @@ func TestCancellationStops(t *testing.T) {
 		t.Errorf("ran %v after cancellation", r.ran)
 	}
 }
+
+// cancellingRunner cancels context when a specific pass is invoked.
+type cancellingRunner struct {
+	ran       []string
+	cancelOn  string
+	cancelCtx context.CancelFunc
+}
+
+func (c *cancellingRunner) DryRun(context.Context, pass.Pass) (runner.Result, error) {
+	return runner.Result{}, nil
+}
+
+func (c *cancellingRunner) Run(_ context.Context, p pass.Pass, events chan<- runner.Event) (runner.Result, error) {
+	c.ran = append(c.ran, p.ID)
+	events <- runner.Event{PassID: p.ID, Percent: 100}
+	if p.ID == c.cancelOn {
+		c.cancelCtx()
+	}
+	return runner.Result{PassID: p.ID}, nil
+}
+
+// Cancellation mid-run abandons remaining passes. This test catches regressions
+// that move the ctx.Err() check outside the loop.
+func TestCancellationStopsMidRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cr := &cancellingRunner{cancelOn: "roms-content-pull", cancelCtx: cancel}
+
+	events := make(chan runner.Event, 64)
+	drain(events)
+
+	sum := Run(ctx, cr, testPasses(), events)
+
+	if sum.OK {
+		t.Fatal("Summary.OK = true despite cancellation mid-run")
+	}
+	if len(cr.ran) != 2 {
+		t.Errorf("ran %v, want to stop after roms-content-pull (2 passes)", cr.ran)
+	}
+	if len(cr.ran) >= 2 && cr.ran[1] != "roms-content-pull" {
+		t.Errorf("ran %v, second pass should be roms-content-pull", cr.ran)
+	}
+	if sum.Err == "" {
+		t.Error("Summary.Err is empty after mid-run cancellation")
+	}
+}
