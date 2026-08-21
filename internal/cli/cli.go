@@ -292,8 +292,35 @@ func selfUpdate(stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "updated to %s\n", rel.Tag)
 
+	var attempted bool
+	var restartErr error
 	if _, err := exec.LookPath("batocera-services"); err == nil {
-		exec.Command("batocera-services", "restart", service.Name).Run()
+		attempted = true
+		restartErr = exec.Command("batocera-services", "restart", service.Name).Run()
+	}
+	return reportRestart(stdout, attempted, restartErr)
+}
+
+// reportRestart writes the outcome of restarting the service after a
+// self-update and decides whether the overall update command succeeded. A
+// restart that was never attempted (batocera-services is absent, e.g. a
+// development machine) is not an error: there is nothing to restart.
+//
+// A restart that was attempted and failed is: the binary on disk is already
+// the new one, but the running process is still the old one, so a caller
+// that only saw "updated to vX.Y.Z" would wrongly believe the new code is
+// live. This is the same class of bug fixed in Task 15, where the service
+// script itself reported success on a failed restart; swallowing the error
+// here would let it back in through the Go caller instead. The command
+// exits non-zero because the operator asked for an update and only got
+// half of one: the binary is staged, but nothing is running it yet.
+func reportRestart(stdout io.Writer, attempted bool, restartErr error) error {
+	if restartErr != nil {
+		fmt.Fprintf(stdout, "service restart failed: %v\n", restartErr)
+		fmt.Fprintln(stdout, "the new binary is installed, but the service is still running the old one; it will take effect on the next manual start or reboot")
+		return fmt.Errorf("update installed but service restart failed: %w", restartErr)
+	}
+	if attempted {
 		fmt.Fprintln(stdout, "service restarted")
 	}
 	return nil

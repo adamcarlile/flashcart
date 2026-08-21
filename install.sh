@@ -35,7 +35,15 @@ GOT=$(sha256sum "$TMP/$ASSET" | awk '{print $1}')
 
 echo "==> installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$TMP/$ASSET" "$BIN"
+# Install to a temporary name in the SAME directory as $BIN, then rename
+# into place. A rename within one directory is atomic, so a power loss
+# mid-write (this box is switched off at the wall, not shut down) can never
+# leave a truncated binary at $BIN. Installing straight to $BIN would not
+# have that property. Staying in the same directory matters: a cross-
+# filesystem "mv" is a copy, not a rename, and loses the atomicity.
+NEW_BIN="$BIN.new"
+install -m 0755 "$TMP/$ASSET" "$NEW_BIN"
+mv "$NEW_BIN" "$BIN"
 
 if [ ! -f "$CFG" ]; then
     echo "==> writing a default config to $CFG"

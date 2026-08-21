@@ -23,10 +23,23 @@ type Release struct {
 	Assets map[string]string
 }
 
-var client = &http.Client{Timeout: 60 * time.Second}
+// client has no per-request Timeout: a bare client-level timeout would
+// silently cap every call, including a large binary download, at a fixed
+// duration regardless of what a caller's context intends to allow. Callers
+// govern their own deadline through the context they pass in.
+var client = &http.Client{}
+
+// latestTimeout bounds the release-metadata call, which should always be
+// quick. It is layered on top of the caller's context via
+// context.WithTimeout, so it can only shorten an already-generous budget,
+// never lengthen a short one.
+const latestTimeout = 15 * time.Second
 
 // Latest returns the newest release for a repo such as "adamcarlile/flashcart".
 func Latest(ctx context.Context, repo string) (Release, error) {
+	ctx, cancel := context.WithTimeout(ctx, latestTimeout)
+	defer cancel()
+
 	url := "https://api.github.com/repos/" + repo + "/releases/latest"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

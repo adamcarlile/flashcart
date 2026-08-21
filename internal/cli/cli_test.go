@@ -2,11 +2,58 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+
+// reportRestart must fail the overall update, not just log a warning, when
+// a restart was attempted and failed: the operator asked for an update and
+// the new binary is staged but never started running.
+func TestReportRestartFailurePropagatesAndExplains(t *testing.T) {
+	var out bytes.Buffer
+	restartErr := errors.New("batocera-services: exit status 1")
+
+	err := reportRestart(&out, true, restartErr)
+	if err == nil {
+		t.Fatal("reportRestart returned nil for a failed restart")
+	}
+	if !strings.Contains(err.Error(), "restart failed") {
+		t.Errorf("error does not mention the restart failure: %v", err)
+	}
+	if !strings.Contains(out.String(), "restart failed") {
+		t.Errorf("stdout does not report the restart failure: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "next manual start or reboot") {
+		t.Errorf("stdout does not tell the operator what to do next: %s", out.String())
+	}
+}
+
+// A restart that succeeds is reported and does not fail the command.
+func TestReportRestartSuccess(t *testing.T) {
+	var out bytes.Buffer
+	if err := reportRestart(&out, true, nil); err != nil {
+		t.Fatalf("reportRestart: %v", err)
+	}
+	if !strings.Contains(out.String(), "service restarted") {
+		t.Errorf("stdout does not confirm the restart: %s", out.String())
+	}
+}
+
+// On a development machine (no batocera-services) there is nothing to
+// restart. That must not be reported as a restart, successful or otherwise.
+func TestReportRestartNotAttempted(t *testing.T) {
+	var out bytes.Buffer
+	if err := reportRestart(&out, false, nil); err != nil {
+		t.Fatalf("reportRestart: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout mentioned a restart that was never attempted: %s", out.String())
+	}
+}
 
 func TestParseDefaults(t *testing.T) {
 	o, err := Parse(nil)

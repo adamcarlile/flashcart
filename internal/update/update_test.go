@@ -1,13 +1,38 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// Fetch must be governed by the caller's context, not a fixed client-level
+// timeout: a large binary download over a slow connection can legitimately
+// take longer than a short, arbitrary cutoff would allow, so it is the
+// caller (selfUpdate, with its 10-minute budget) that decides how long is
+// too long. This proves the request actually respects a short context
+// rather than running to completion regardless.
+func TestFetchRespectsCallerContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte("too slow"))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	if _, err := Fetch(ctx, srv.URL); err == nil {
+		t.Fatal("Fetch ignored a caller context that had already expired")
+	}
+}
 
 func TestParseChecksums(t *testing.T) {
 	body := `
