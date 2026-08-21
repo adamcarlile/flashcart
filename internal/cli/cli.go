@@ -149,7 +149,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		fmt.Fprintln(stdout, "service installed and enabled")
+		fmt.Fprintln(stdout, "service installed, enabled and started")
 		return 0
 	case "uninstall-service":
 		if err := service.Uninstall(); err != nil {
