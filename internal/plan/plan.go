@@ -121,6 +121,12 @@ func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.P
 		if p.Direction == pass.DirPush {
 			side = SideNAS
 		}
+		// roms-content-pull and roms-metadata-pull both write to the local
+		// roms directory, so the cancellation set roms-metadata-push reads
+		// here is the union of what both earlier passes would create. That
+		// is safe only because paths.Classify partitions content and
+		// metadata filters disjointly, so no relative path can appear in
+		// both projections and collide.
 		alreadyPlanned := projected[p.Src]
 		for _, rel := range res.Deletions {
 			if alreadyPlanned[rel] {
@@ -146,6 +152,14 @@ func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.P
 		out.Trees = append(out.Trees, *tp)
 	}
 
+	// Free space is measured only at the roms local tree, but RequiredBytes
+	// sums incoming bytes across every pull-direction tree (roms and bios
+	// both pull). This assumes all three local trees live on one
+	// filesystem, which holds on the deployed target (/userdata is a
+	// single ext4 partition) but is not enforced by config validation. If
+	// that assumption is ever violated, the precheck can misjudge; the
+	// failure mode is graceful, since rsync itself fails a real transfer
+	// with "No space left on device" and the runner surfaces that verbatim.
 	freeBytes, totalBytes, err := free(cfg.Trees.Roms.Local)
 	if err != nil {
 		return Plan{}, fmt.Errorf("check free space on %s: %w", cfg.Trees.Roms.Local, err)
@@ -166,15 +180,26 @@ func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.P
 	return out, nil
 }
 
+// humanBytes formats n for display. Remaining space after a transfer can be
+// negative (required exceeds free), and the refusal message embeds this
+// value alongside other humanized figures, so a bare negative byte count
+// would stick out as the one unhumanized number in an otherwise legible
+// sentence. Negatives are formatted by magnitude with a leading minus sign;
+// everything else about the unit table and boundaries is unchanged.
 func humanBytes(n int64) string {
 	const unit = 1024
+	sign := ""
+	if n < 0 {
+		sign = "-"
+		n = -n
+	}
 	if n < unit {
-		return fmt.Sprintf("%d B", n)
+		return fmt.Sprintf("%s%d B", sign, n)
 	}
 	div, exp := int64(unit), 0
 	for v := n / unit; v >= unit; v /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+	return fmt.Sprintf("%s%.1f %cB", sign, float64(n)/float64(div), "KMGTPE"[exp])
 }

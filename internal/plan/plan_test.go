@@ -2,6 +2,7 @@ package plan
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/adamcarlile/flashcart/internal/config"
@@ -169,7 +170,12 @@ func TestIncomingAndOutgoingBytesAreSeparated(t *testing.T) {
 func TestTreeCarriesPerPassBreakdown(t *testing.T) {
 	r := stubRunner{results: map[string]runner.Result{
 		"roms-content-pull": {
-			Changes:       []runner.Change{{Itemize: ">f+++++++++", Size: 1000, Path: "snes/New.zip"}},
+			// A directory entry alongside the file pins that the file-count
+			// guard excludes directories rather than counting every change.
+			Changes: []runner.Change{
+				{Itemize: ">f+++++++++", Size: 1000, Path: "snes/New.zip"},
+				{Itemize: "cd+++++++++", Size: 4096, Path: "snes/images"},
+			},
 			TransferBytes: 1000,
 		},
 		"roms-metadata-push": {
@@ -193,7 +199,7 @@ func TestTreeCarriesPerPassBreakdown(t *testing.T) {
 			byID[ps.ID] = ps
 		}
 		if got := byID["roms-content-pull"]; got.Direction != "in" || got.Bytes != 1000 || got.Files != 1 {
-			t.Errorf("content pull summary = %+v", got)
+			t.Errorf("content pull summary = %+v, want Files=1 (directory entry excluded)", got)
 		}
 		if got := byID["roms-metadata-push"]; got.Direction != "out" || got.Bytes != 40 {
 			t.Errorf("metadata push summary = %+v", got)
@@ -220,6 +226,28 @@ func TestInsufficientSpaceIsRefused(t *testing.T) {
 	}
 	if p.Message == "" {
 		t.Error("an insufficient plan must carry an explanatory message")
+	}
+}
+
+// When required space exceeds free space outright (not just the margin),
+// "remaining" goes negative. The refusal message must still read as a
+// humanized quantity, not fall back to a raw byte count for that one figure.
+func TestInsufficientSpaceMessageHumanizesNegativeRemaining(t *testing.T) {
+	r := stubRunner{results: map[string]runner.Result{
+		"roms-content-pull": {TransferBytes: 100 << 30}, // 100 GiB incoming
+	}}
+	tight := func(string) (int64, int64, error) {
+		return 4 << 30, 459 << 30, nil // only 4 GiB free: remaining goes negative
+	}
+	p, err := Build(context.Background(), testCfg(), r, testPasses(), tight)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if p.Sufficient {
+		t.Error("Sufficient = true, but required (100 GiB) exceeds free (4 GiB)")
+	}
+	if !strings.Contains(p.Message, "-96.0 GB") {
+		t.Errorf("Message = %q, want a humanized negative remaining like -96.0 GB, not a raw byte count", p.Message)
 	}
 }
 
