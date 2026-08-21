@@ -154,6 +154,13 @@ func TestSyncIsSingleFlight(t *testing.T) {
 	if w := do(t, app, http.MethodPost, "/api/plan", ""); w.Code != http.StatusConflict {
 		t.Errorf("plan during sync status = %d, want 409", w.Code)
 	}
+	// verifyDrift is intentionally checked only after acquire() succeeds
+	// (see server.go), so a confirm during a sync must be refused by the
+	// single-flight lock itself, before drift membership is ever consulted.
+	confirmBody := `{"items":[{"tree":"roms","side":"local","rel":"snes/Removed From NAS (USA).zip"}]}`
+	if w := do(t, app, http.MethodPost, "/api/drift/confirm", confirmBody); w.Code != http.StatusConflict {
+		t.Errorf("drift confirm during sync status = %d, want 409", w.Code)
+	}
 }
 
 func TestEventsStreamProgress(t *testing.T) {
@@ -260,6 +267,45 @@ func TestDriftConfirmRejectsItemNotShownInPlan(t *testing.T) {
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Error("item not shown in the plan was deleted anyway")
+	}
+}
+
+// TestDriftConfirmRejectsMixedBatch proves the gate rejects the whole batch,
+// not just the bad item, when a request mixes one item that was in the last
+// plan with one that was not. The confirmed item's file must survive: it
+// was never deleted, because the bad item in the same request poisoned the
+// whole batch, consistent with drift.Delete's own all-or-nothing contract.
+func TestDriftConfirmRejectsMixedBatch(t *testing.T) {
+	localRoms := t.TempDir()
+	planned := filepath.Join(localRoms, "snes", "Removed From NAS (USA).zip")
+	unplanned := filepath.Join(localRoms, "nes", "Not In Plan.zip")
+	for _, p := range []string{planned, unplanned} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app, _ := newApp(t, fake.ScenarioDrift, localRoms)
+	if w := do(t, app, http.MethodPost, "/api/plan", ""); w.Code != http.StatusOK {
+		t.Fatalf("plan status = %d body = %s", w.Code, w.Body)
+	}
+
+	body := `{"items":[` +
+		`{"tree":"roms","side":"local","rel":"snes/Removed From NAS (USA).zip"},` +
+		`{"tree":"roms","side":"local","rel":"nes/Not In Plan.zip"}` +
+		`]}`
+	w := do(t, app, http.MethodPost, "/api/drift/confirm", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s, want 400", w.Code, w.Body)
+	}
+	if _, err := os.Stat(planned); err != nil {
+		t.Error("the planned item was deleted despite the batch containing an unplanned item")
+	}
+	if _, err := os.Stat(unplanned); err != nil {
+		t.Error("the unplanned item was deleted")
 	}
 }
 

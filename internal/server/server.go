@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -87,8 +88,8 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"err": msg})
 }
 
-// acquire enforces single-flight. Plan and sync cannot overlap, and a second
-// browser tab cannot start a parallel run.
+// acquire enforces single-flight. Plan, sync and drift-confirm cannot
+// overlap, and a second browser tab cannot start a parallel run.
 func (a *App) acquire() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -126,6 +127,13 @@ func driftSet(p plan.Plan) map[string]bool {
 // recent plan. If no plan has run since startup, confirmedDrift is nil and
 // every confirm is refused: you cannot confirm a deletion you were never
 // shown.
+//
+// Callers must call this only after acquire() has succeeded. Checking
+// membership before taking the single-flight lock would reopen the exact
+// race this gate exists to close: a concurrent /api/plan could run to
+// completion between the check and the lock, replacing confirmedDrift with
+// a different set, and the confirm would then delete items validated
+// against a plan snapshot that is no longer the most recent.
 func (a *App) verifyDrift(items []plan.DriftItem) error {
 	a.mu.Lock()
 	set := a.confirmedDrift
@@ -182,12 +190,23 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // withMounts holds the NAS for the duration of fn and always unmounts, even
 // on failure. A leaked mount is how the next boot gets slow and confusing.
+//
+// unmount can genuinely fail ("device or resource busy"), so its error is
+// not discarded: it is logged to stderr, which the Batocera service script
+// routes to /userdata/system/logs/flashcart.log, giving an operator
+// somewhere to find it. It is deliberately not surfaced in the HTTP
+// response of an otherwise-successful request: that would put unmount
+// noise on the happy path for something the caller cannot act on directly.
 func (a *App) withMounts(ctx context.Context, fn func(nas.Mounts) error) error {
 	m, unmount, err := a.opts.Provider.Mount(ctx)
 	if err != nil {
 		return err
 	}
-	defer unmount()
+	defer func() {
+		if uerr := unmount(); uerr != nil {
+			log.Printf("server: unmount failed: %v", uerr)
+		}
+	}()
 	return fn(m)
 }
 
@@ -279,19 +298,23 @@ func (a *App) handleDriftConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every item must have been shown by the most recent plan. Reject the
-	// whole batch rather than silently filtering, consistent with
-	// drift.Delete's own all-or-nothing contract.
-	if err := a.verifyDrift(body.Items); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
 	if !a.acquire() {
 		writeErr(w, http.StatusConflict, "a plan or sync is already running")
 		return
 	}
 	defer a.release()
+
+	// Every item must have been shown by the most recent plan. Reject the
+	// whole batch rather than silently filtering, consistent with
+	// drift.Delete's own all-or-nothing contract. This runs only after
+	// acquire() has succeeded: checking membership first would let a
+	// concurrent /api/plan replace confirmedDrift between the check and the
+	// lock, validating this confirm against a plan snapshot that is no
+	// longer the most recent.
+	if err := a.verifyDrift(body.Items); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var deleted []string
 	var deleteErr error
