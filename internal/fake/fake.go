@@ -131,22 +131,35 @@ func (b *Backend) FreeSpace(string) (int64, int64, error) {
 	return 433 * gib, total, nil
 }
 
-// DryRun returns the scripted result for a pass in the current scenario.
+// DryRun returns the scripted result for a pass in the current scenario. A
+// real dry run against an unmounted export fails, so this must too: callers
+// (including this package's own tests) may reach DryRun without ever
+// calling Mount.
 func (b *Backend) DryRun(_ context.Context, p pass.Pass) (runner.Result, error) {
+	if b.Scenario() == ScenarioOffline {
+		return runner.Result{PassID: p.ID}, fmt.Errorf("%w: fake NAS is offline", nas.ErrUnreachable)
+	}
 	res := b.script()[p.ID]
 	res.PassID = p.ID
 	return res, nil
 }
 
 // Run simulates a transfer, emitting progress over wall-clock time so SSE
-// streaming and the single-flight lock are genuinely exercised.
+// streaming and the single-flight lock are genuinely exercised. The
+// scenario is snapshotted once at the top: SetScenario is designed to be
+// callable while a run is in flight, and reading b.Scenario() repeatedly
+// through this method would let a mid-run switch tear the offline check,
+// the failure check and the scripted result apart, each individually
+// mutex-safe but mutually inconsistent.
 func (b *Backend) Run(ctx context.Context, p pass.Pass, events chan<- runner.Event) (runner.Result, error) {
-	if b.Scenario() == ScenarioOffline {
+	s := b.Scenario()
+
+	if s == ScenarioOffline {
 		return runner.Result{PassID: p.ID}, fmt.Errorf("%w: fake NAS is offline", nas.ErrUnreachable)
 	}
 
 	failAt := -1
-	if b.Scenario() == ScenarioFailure && p.ID == "roms-content-pull" {
+	if s == ScenarioFailure && p.ID == "roms-content-pull" {
 		failAt = 60
 	}
 
@@ -172,14 +185,23 @@ func (b *Backend) Run(ctx context.Context, p pass.Pass, events chan<- runner.Eve
 		}
 	}
 
-	res := b.script()[p.ID]
+	res := scriptFor(s)[p.ID]
 	res.PassID = p.ID
 	return res, nil
 }
 
 // script returns the per-pass results for the current scenario.
 func (b *Backend) script() map[string]runner.Result {
-	switch b.Scenario() {
+	return scriptFor(b.Scenario())
+}
+
+// scriptFor returns the per-pass results for scenario s. It takes the
+// scenario as a parameter, rather than reading b.scenario itself, so
+// callers that must act on a single consistent scenario value (Run) can
+// snapshot it once and thread it through instead of re-reading the
+// (possibly since-changed) live scenario.
+func scriptFor(s Scenario) map[string]runner.Result {
+	switch s {
 	case ScenarioSeed:
 		// Empty box: everything arrives. The metadata push sees the NAS
 		// copies as absent from its source, which the projected-state

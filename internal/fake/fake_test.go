@@ -2,9 +2,12 @@ package fake
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/adamcarlile/flashcart/internal/config"
 	"github.com/adamcarlile/flashcart/internal/nas"
@@ -87,6 +90,22 @@ func TestOfflineScenarioFailsProbeAndMount(t *testing.T) {
 	}
 }
 
+// DryRun never mounts, so a caller that reaches it without calling Mount
+// first (this package's own scenario tests do exactly that, via
+// plan.Build) must still see the NAS as unreachable rather than getting a
+// silent, empty "nothing to sync" result.
+func TestOfflineScenarioFailsDryRun(t *testing.T) {
+	b := mustNew(t, ScenarioOffline)
+	ps := pass.Passes(cfg(), nas.Mounts{Roms: "/m/roms", Bios: "/m/bios", Saves: "/m/saves"})
+	_, err := b.DryRun(context.Background(), ps[0])
+	if err == nil {
+		t.Fatal("DryRun succeeded in the offline scenario")
+	}
+	if !errors.Is(err, nas.ErrUnreachable) {
+		t.Errorf("DryRun error = %v, want it to wrap nas.ErrUnreachable", err)
+	}
+}
+
 // The scenario that matters most: a first run must show a large incoming
 // transfer and no drift at all.
 func TestSeedScenarioPlansLargeIncomingAndNoDrift(t *testing.T) {
@@ -150,8 +169,12 @@ func TestFailureScenarioFailsMidRun(t *testing.T) {
 	ps := pass.Passes(cfg(), nas.Mounts{Roms: "/m/roms", Bios: "/m/bios", Saves: "/m/saves"})
 
 	events := make(chan runner.Event, 4096)
+	var collected []runner.Event
+	drained := make(chan struct{})
 	go func() {
-		for range events {
+		defer close(drained)
+		for e := range events {
+			collected = append(collected, e)
 		}
 	}()
 
@@ -162,8 +185,93 @@ func TestFailureScenarioFailsMidRun(t *testing.T) {
 			break
 		}
 	}
+	close(events)
+	<-drained
+
 	if failed != "roms-content-pull" {
 		t.Errorf("failure scenario failed on %q, want roms-content-pull", failed)
+	}
+	// The injected failure sits at percent 60: no progress event for the
+	// failing pass may be emitted past that point, or the fake would be
+	// claiming progress it did not make.
+	for _, e := range collected {
+		if e.PassID == "roms-content-pull" && e.Percent > 60 {
+			t.Errorf("roms-content-pull emitted progress %d beyond the injected failure point of 60", e.Percent)
+		}
+	}
+}
+
+// The brief requires scenario switching to be safe while a request is in
+// flight. This pins that: a run that streams progress all the way to 100%
+// must return the result of the scenario it started under, never a result
+// torn from whatever scenario happened to be live when script() last read
+// it. Run under -race: the bug this guards was a logic race across three
+// individually mutex-safe reads, which -race alone cannot see, but the
+// concurrent SetScenario calls here still exercise the mutex under -race
+// to catch any accidental unguarded access.
+func TestScenarioSwitchDuringRunIsConsistent(t *testing.T) {
+	b := mustNew(t, ScenarioSteady)
+	b.Delay = 2 * time.Millisecond
+	ps := pass.Passes(cfg(), nas.Mounts{Roms: "/m/roms", Bios: "/m/bios", Saves: "/m/saves"})
+	target := ps[1] // roms-content-pull: steady has a real, non-empty result here.
+
+	events := make(chan runner.Event)
+	firstEvent := make(chan struct{})
+	var once sync.Once
+	drained := make(chan struct{})
+
+	var mu sync.Mutex
+	var lastPercent, count int
+
+	go func() {
+		defer close(drained)
+		for e := range events {
+			mu.Lock()
+			lastPercent = e.Percent
+			count++
+			mu.Unlock()
+			once.Do(func() { close(firstEvent) })
+		}
+	}()
+
+	type runOut struct {
+		res runner.Result
+		err error
+	}
+	runDone := make(chan runOut, 1)
+	go func() {
+		res, err := b.Run(context.Background(), target, events)
+		runDone <- runOut{res, err}
+		close(events)
+	}()
+
+	<-firstEvent
+	// Switch repeatedly while the run above continues in the background.
+	// It started under ScenarioSteady, so none of these should change what
+	// it ultimately reports.
+	for _, sc := range []Scenario{ScenarioOffline, ScenarioFailure, ScenarioDrift, ScenarioNoSpace, ScenarioSteady} {
+		if err := b.SetScenario(sc); err != nil {
+			t.Fatalf("SetScenario(%s): %v", sc, err)
+		}
+	}
+
+	out := <-runDone
+	<-drained
+
+	mu.Lock()
+	finalPercent, seen := lastPercent, count
+	mu.Unlock()
+
+	if out.err != nil {
+		t.Fatalf("Run failed unexpectedly: %v", out.err)
+	}
+	if finalPercent != 100 {
+		t.Fatalf("progress did not reach completion: last = %d (%d events)", finalPercent, seen)
+	}
+
+	want := scriptFor(ScenarioSteady)[target.ID]
+	if out.res.TransferBytes != want.TransferBytes || len(out.res.Changes) != len(want.Changes) {
+		t.Errorf("Run streamed to completion under its starting scenario but returned %+v, want the steady result %+v (a mid-run scenario switch must not tear the returned result apart from the progress it streamed)", out.res, want)
 	}
 }
 
