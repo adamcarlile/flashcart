@@ -36,7 +36,23 @@ CFG=%q
 LOG="/userdata/system/logs/%s.log"
 PIDFILE="/var/run/%s.pid"
 
+# Check if the process in pidfile is actually flashcart
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    pid=$(cat "$PIDFILE")
+    kill -0 "$pid" 2>/dev/null || return 1
+    # If /proc is available, verify it is actually flashcart
+    if [ -r "/proc/$pid/comm" ]; then
+        grep -q "^flashcart$" "/proc/$pid/comm" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
 start() {
+    # Don't start if already running
+    if is_running; then
+        return 0
+    fi
     mkdir -p "$(dirname "$LOG")"
     "$BIN" --config="$CFG" serve >>"$LOG" 2>&1 &
     echo $! > "$PIDFILE"
@@ -44,13 +60,20 @@ start() {
 
 stop() {
     [ -f "$PIDFILE" ] || return 0
-    kill "$(cat "$PIDFILE")" 2>/dev/null
+    pid=$(cat "$PIDFILE")
+    kill "$pid" 2>/dev/null
+    # Wait for the process to actually exit, with timeout
+    n=0
+    while kill -0 "$pid" 2>/dev/null && [ $n -lt 50 ]; do
+        sleep 0.1
+        n=$((n + 1))
+    done
     rm -f "$PIDFILE"
 }
 
 status() {
     [ -f "$PIDFILE" ] || { echo "stopped"; return 1; }
-    kill -0 "$(cat "$PIDFILE")" 2>/dev/null && echo "running" || { echo "stopped"; return 1; }
+    is_running && echo "running" || { echo "stopped"; return 1; }
 }
 
 case "$1" in
@@ -92,8 +115,12 @@ func Install() error {
 // Uninstall stops the service and removes the script.
 func Uninstall() error {
 	if _, err := exec.LookPath("batocera-services"); err == nil {
-		exec.Command("batocera-services", "stop", Name).Run()
-		exec.Command("batocera-services", "disable", Name).Run()
+		if err := exec.Command("batocera-services", "stop", Name).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: batocera-services stop failed: %v\n", err)
+		}
+		if err := exec.Command("batocera-services", "disable", Name).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: batocera-services disable failed: %v\n", err)
+		}
 	}
 	target := filepath.Join(Dir, Name)
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
