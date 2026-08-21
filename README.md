@@ -46,9 +46,17 @@ On the Batocera box:
 curl -sSL https://raw.githubusercontent.com/adamcarlile/flashcart/main/install.sh | sh
 ```
 
-Then edit `/userdata/system/flashcart/flashcart.toml` and enable the service
-from EmulationStation under Settings, Services, flashcart. The UI is at
-`http://<box>:8474`.
+It fetches the latest release, verifies its checksum, installs under
+`/userdata/system/flashcart/`, writes a default config, then enables AND starts
+the service — waiting for it to answer before reporting success. The UI is then
+at `http://<box>:8474`.
+
+Edit `/userdata/system/flashcart/flashcart.toml` if your NAS host or export
+paths differ, then restart: `batocera-services restart flashcart`.
+
+The service also appears in EmulationStation under Settings, Services, where you
+can stop or disable it later. You do not need to enable it there — the installer
+already has.
 
 ## Update
 

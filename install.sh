@@ -71,10 +71,32 @@ else
     echo "==> keeping the existing config at $CFG"
 fi
 
-echo "==> installing the service"
+echo "==> installing and starting the service"
 "$BIN" install-service
 
+# Only promise a URL that answers. Installing used to enable the service
+# without starting it, so this message advertised a dead port until the next
+# reboot. Poll briefly rather than assume.
+PORT=$(sed -n 's/^ *listen *= *"\?:\([0-9]*\)"\?.*/\1/p' "$CFG" | head -n1)
+[ -n "$PORT" ] || PORT=8474
+
+echo "==> waiting for the service to answer on :$PORT"
+i=0
+while [ "$i" -lt 20 ]; do
+    if wget -q -O /dev/null "http://127.0.0.1:$PORT/api/status" 2>/dev/null; then
+        echo
+        echo "flashcart $TAG installed and running."
+        echo "UI: http://$(hostname):$PORT"
+        echo "Update later with: $BIN update"
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+
 echo
-echo "flashcart $TAG installed."
-echo "UI: http://$(hostname):8474"
-echo "Update later with: $BIN update"
+echo "flashcart $TAG is installed, but nothing is answering on :$PORT." >&2
+echo "The binary and service script are in place; only the service did not come up." >&2
+echo "Check the log:  tail /userdata/system/logs/flashcart.log" >&2
+echo "Retry manually: /userdata/system/services/$(basename "$BIN") start" >&2
+exit 1

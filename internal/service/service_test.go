@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -132,5 +133,88 @@ func TestScriptPinsRsyncPath(t *testing.T) {
 	}
 	if !strings.Contains(s, "--rsync=") {
 		t.Error("script does not pass --rsync to the flashcart binary")
+	}
+}
+
+// Install must START the service, not merely enable it. batocera-services
+// treats those as separate verbs: enable registers the service for the next
+// boot, start launches it now. Installing and only enabling leaves the box
+// with a dead port until it reboots, while install.sh cheerfully prints a URL.
+func TestInstallStartsTheServiceAndNotJustEnablesIt(t *testing.T) {
+	var got [][]string
+	restore := stubCommands(func(name string, args ...string) ([]byte, error) {
+		got = append(got, append([]string{name}, args...))
+		return nil, nil
+	}, func() (string, error) { return "/userdata/system/flashcart/flashcart", nil },
+		t.TempDir())
+	defer restore()
+
+	if err := Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	var verbs []string
+	for _, c := range got {
+		if len(c) >= 2 && c[0] == "batocera-services" {
+			verbs = append(verbs, c[1])
+		}
+	}
+	if len(verbs) != 2 || verbs[0] != "enable" || verbs[1] != "start" {
+		t.Fatalf("batocera-services verbs = %v, want [enable start]", verbs)
+	}
+}
+
+// A failed start must not be reported as a successful install: the whole
+// point of this fix is that the installer stops promising a URL that does
+// not answer.
+func TestInstallSurfacesAFailedStart(t *testing.T) {
+	restore := stubCommands(func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "start" {
+			return []byte("could not bind :8474"), errors.New("exit status 1")
+		}
+		return nil, nil
+	}, func() (string, error) { return "/userdata/system/flashcart/flashcart", nil },
+		t.TempDir())
+	defer restore()
+
+	err := Install()
+	if err == nil {
+		t.Fatal("Install reported success despite the service failing to start")
+	}
+	if !strings.Contains(err.Error(), "start") || !strings.Contains(err.Error(), "could not bind") {
+		t.Errorf("error should name the start failure and its output, got: %v", err)
+	}
+}
+
+// stubCommands redirects the package's command seam, its notion of where the
+// running binary is, and the directories it writes to, returning a function
+// that puts all of them back.
+func stubCommands(run func(string, ...string) ([]byte, error), exe func() (string, error), dir string) func() {
+	oRun, oLook, oExe, oDir, oInstall := runCommand, lookPath, executable, Dir, InstallDir
+	runCommand = run
+	lookPath = func(string) (string, error) { return "/usr/bin/batocera-services", nil }
+	executable = exe
+	Dir = dir
+	InstallDir = dir
+	return func() {
+		runCommand, lookPath, executable, Dir, InstallDir = oRun, oLook, oExe, oDir, oInstall
+	}
+}
+
+// On a machine without batocera-services, Install writes the script and stops
+// cleanly rather than erroring — that is what makes it usable in development.
+func TestInstallSkipsServiceCommandsWhenBatoceraServicesIsAbsent(t *testing.T) {
+	called := 0
+	oLook := lookPath
+	restore := stubCommands(func(string, ...string) ([]byte, error) { called++; return nil, nil },
+		func() (string, error) { return "/tmp/flashcart", nil }, t.TempDir())
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	defer func() { restore(); lookPath = oLook }()
+
+	if err := Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if called != 0 {
+		t.Errorf("ran %d service commands on a machine with no batocera-services", called)
 	}
 }

@@ -10,21 +10,37 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const (
 	// Name is how the service appears in EmulationStation.
 	Name = "flashcart"
-	// Dir is where Batocera looks for service scripts.
-	Dir = "/userdata/system/services"
-	// InstallDir holds the binary and config. It is under /userdata so it
-	// survives Batocera OS updates.
-	InstallDir = "/userdata/system/flashcart"
 	// RsyncPath is where rsync lives on Batocera. Pinned explicitly rather
 	// than left to a PATH lookup: the generated script runs at boot, under
 	// whatever (possibly minimal) environment batocera-services provides,
 	// and runner.Exec otherwise falls back to a bare "rsync" PATH lookup.
 	RsyncPath = "/usr/bin/rsync"
+)
+
+// Dir is where Batocera looks for service scripts, and InstallDir holds the
+// binary and config. Both are under /userdata so they survive Batocera OS
+// updates. They are variables rather than constants only so tests can
+// redirect them; nothing reassigns them at runtime.
+var (
+	Dir        = "/userdata/system/services"
+	InstallDir = "/userdata/system/flashcart"
+)
+
+// The seams Install and Uninstall run through. Defaulted to the real thing;
+// swapped in tests. A bug in this plumbing — the installer enabling the
+// service but never starting it — is what motivated making it testable.
+var (
+	runCommand = func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).CombinedOutput()
+	}
+	lookPath   = exec.LookPath
+	executable = os.Executable
 )
 
 // Script renders the service script. Every path is quoted so a directory
@@ -114,7 +130,7 @@ esac
 
 // Install writes the service script and enables it.
 func Install() error {
-	binary, err := os.Executable()
+	binary, err := executable()
 	if err != nil {
 		return fmt.Errorf("locate the running binary: %w", err)
 	}
@@ -130,22 +146,31 @@ func Install() error {
 
 	// batocera-services is absent on a development machine, so a failure
 	// here is reported without undoing the script that was written.
-	if _, err := exec.LookPath("batocera-services"); err == nil {
-		if out, err := exec.Command("batocera-services", "enable", Name).CombinedOutput(); err != nil {
-			return fmt.Errorf("batocera-services enable %s: %w: %s", Name, err, out)
-		}
+	if _, err := lookPath("batocera-services"); err != nil {
+		return nil
+	}
+
+	// enable and start are SEPARATE verbs. enable only registers the service
+	// for the next boot. Enabling without starting leaves the box with a dead
+	// port until it reboots, while the installer prints a URL as though it
+	// were live — which is exactly the defect this fixes.
+	if out, err := runCommand("batocera-services", "enable", Name); err != nil {
+		return fmt.Errorf("batocera-services enable %s: %w: %s", Name, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := runCommand("batocera-services", "start", Name); err != nil {
+		return fmt.Errorf("batocera-services start %s: %w: %s", Name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 // Uninstall stops the service and removes the script.
 func Uninstall() error {
-	if _, err := exec.LookPath("batocera-services"); err == nil {
-		if err := exec.Command("batocera-services", "stop", Name).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: batocera-services stop failed: %v\n", err)
+	if _, err := lookPath("batocera-services"); err == nil {
+		if out, err := runCommand("batocera-services", "stop", Name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: batocera-services stop failed: %v: %s\n", err, strings.TrimSpace(string(out)))
 		}
-		if err := exec.Command("batocera-services", "disable", Name).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: batocera-services disable failed: %v\n", err)
+		if out, err := runCommand("batocera-services", "disable", Name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: batocera-services disable failed: %v: %s\n", err, strings.TrimSpace(string(out)))
 		}
 	}
 	target := filepath.Join(Dir, Name)
