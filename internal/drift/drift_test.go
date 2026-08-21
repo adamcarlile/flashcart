@@ -139,3 +139,89 @@ func TestDeleteRefusesUnknownTreeOrSide(t *testing.T) {
 		}
 	}
 }
+
+// A symlinked intermediate directory inside the tree must not let deletion
+// escape the root: os.Root resolves every path segment at the syscall
+// boundary, so a symlink pointing outside the tree is refused rather than
+// followed, and the target outside the tree survives untouched.
+func TestDeleteRefusesTraversalThroughSymlinkedDir(t *testing.T) {
+	roots, localRoms, _ := rootsIn(t)
+
+	outsideDir := t.TempDir()
+	precious := touch(t, outsideDir, "saves.srm")
+
+	linkPath := filepath.Join(localRoms, "ps3")
+	if err := os.Symlink(outsideDir, linkPath); err != nil {
+		t.Skipf("symlinks unsupported on this filesystem: %v", err)
+	}
+
+	_, err := Delete(roots, []plan.DriftItem{
+		{Tree: "roms", Side: plan.SideLocal, Rel: "ps3/saves.srm"},
+	})
+	if err == nil {
+		t.Fatal("Delete through a symlinked intermediate directory succeeded, want refusal")
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Errorf("unhelpful refusal for symlinked-dir escape: %v", err)
+	}
+	if _, statErr := os.Stat(precious); statErr != nil {
+		t.Errorf("collateral damage: file outside the tree is gone: %v", statErr)
+	}
+}
+
+// A leaf that is itself a symlink is a legitimate delete target: only the
+// link entry inside the tree is removed, and whatever it points to outside
+// the tree survives.
+func TestDeleteRemovesLeafSymlinkNotItsTarget(t *testing.T) {
+	roots, localRoms, _ := rootsIn(t)
+
+	outsideDir := t.TempDir()
+	target := touch(t, outsideDir, "real.zip")
+
+	linkPath := filepath.Join(localRoms, "snes", "link.zip")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("symlinks unsupported on this filesystem: %v", err)
+	}
+
+	deleted, err := Delete(roots, []plan.DriftItem{
+		{Tree: "roms", Side: plan.SideLocal, Rel: "snes/link.zip"},
+	})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("deleted %v, want one path", deleted)
+	}
+	if _, statErr := os.Lstat(linkPath); !os.IsNotExist(statErr) {
+		t.Error("the symlink itself survived deletion")
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		t.Errorf("the symlink's target outside the tree was deleted: %v", statErr)
+	}
+}
+
+// A NUL byte in Rel is client-controlled once Task 12 decodes JSON from the
+// browser (JSON can legally encode an escaped NUL). It must be refused
+// during validation, before any deletion, so it cannot break the
+// all-or-nothing batch guarantee.
+func TestDeleteRefusesEmbeddedNULByte(t *testing.T) {
+	roots, localRoms, _ := rootsIn(t)
+	good := touch(t, localRoms, "snes/Good.zip")
+
+	_, err := Delete(roots, []plan.DriftItem{
+		{Tree: "roms", Side: plan.SideLocal, Rel: "snes/Good.zip"},
+		{Tree: "roms", Side: plan.SideLocal, Rel: "snes/Bad\x00.zip"},
+	})
+	if err == nil {
+		t.Fatal("Delete succeeded with a NUL byte in the batch")
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Errorf("unhelpful refusal for NUL-byte path: %v", err)
+	}
+	if _, statErr := os.Stat(good); statErr != nil {
+		t.Error("a valid entry was deleted despite the batch containing a NUL-byte entry")
+	}
+}
