@@ -2,6 +2,9 @@ package plan
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,6 +38,9 @@ func testCfg() *config.Config {
 			Saves: config.Tree{Export: "/e/saves", Local: "/userdata/saves"},
 		},
 		SpaceMarginPercent: 10,
+		// Pinned off so these tests do not depend on whether the host
+		// happens to be a Batocera box with a real datainit tree.
+		FactoryRoot: new(string),
 	}
 }
 
@@ -256,5 +262,119 @@ func TestSufficientSpaceIsAccepted(t *testing.T) {
 	}
 	if !p.Sufficient {
 		t.Errorf("Sufficient = false with 400 GiB free and 93 GiB needed: %s", p.Message)
+	}
+}
+
+// factoryTree builds a stand-in for Batocera's /usr/share/batocera/datainit:
+// the per-system _info.txt files and bios support data the image copies into
+// /userdata on every boot.
+func factoryTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, p := range []string{
+		"roms/snes/_info.txt",
+		"roms/snes/gamelist.xml",
+		"bios/Machines/msx.rom",
+	} {
+		full := filepath.Join(root, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// Content the appliance image put on the box was never the NAS's to hold, so
+// its absence from the NAS is not drift. Reporting it offered hundreds of
+// deletions that Batocera's own S12populateshare would partly undo on the
+// next boot, and that in the bios tree are the support data emulators load.
+func TestFactoryContentIsNotDrift(t *testing.T) {
+	cfg := testCfg()
+	root := factoryTree(t)
+	cfg.FactoryRoot = &root
+
+	r := stubRunner{results: map[string]runner.Result{
+		"bios-pull": {
+			Deletions: []string{"Machines/", "Machines/msx.rom", "scph5501.bin"},
+		},
+		"roms-content-pull": {
+			Deletions: []string{"snes/_info.txt", "snes/Chrono Trigger.sfc"},
+		},
+	}}
+
+	p, err := Build(context.Background(), cfg, r, testPasses(), plentyOfSpace)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	byTree := map[string][]string{}
+	for _, tp := range p.Trees {
+		for _, d := range tp.Drift {
+			byTree[tp.Tree] = append(byTree[tp.Tree], d.Rel)
+		}
+	}
+
+	if got, want := byTree["bios"], []string{"scph5501.bin"}; !slices.Equal(got, want) {
+		t.Errorf("bios drift = %v, want %v", got, want)
+	}
+	if got, want := byTree["roms"], []string{"snes/Chrono Trigger.sfc"}; !slices.Equal(got, want) {
+		t.Errorf("roms drift = %v, want %v", got, want)
+	}
+	// Withheld, not silently dropped: the UI reports this count.
+	if p.FactoryExcluded != 3 {
+		t.Errorf("FactoryExcluded = %d, want 3", p.FactoryExcluded)
+	}
+}
+
+// The exclusion is about the box's own copy of the image. A NAS-side path
+// that happens to match a factory path is still genuine drift: nothing on the
+// NAS came from the appliance image.
+func TestFactoryExclusionAppliesOnlyToTheLocalSide(t *testing.T) {
+	cfg := testCfg()
+	root := factoryTree(t)
+	cfg.FactoryRoot = &root
+
+	r := stubRunner{results: map[string]runner.Result{
+		"roms-metadata-push": {
+			Deletions: []string{"snes/gamelist.xml"},
+		},
+	}}
+
+	p, err := Build(context.Background(), cfg, r, testPasses(), plentyOfSpace)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	for _, tp := range p.Trees {
+		if tp.Tree != "roms" {
+			continue
+		}
+		want := []DriftItem{{Tree: "roms", Side: SideNAS, Rel: "snes/gamelist.xml"}}
+		if !slices.Equal(tp.Drift, want) {
+			t.Errorf("roms drift = %v, want %v", tp.Drift, want)
+		}
+	}
+}
+
+// With the exclusion disabled, factory content is reported like anything
+// else: the off switch has to actually be off.
+func TestFactoryExclusionCanBeDisabled(t *testing.T) {
+	cfg := testCfg() // FactoryRoot pinned to "".
+	r := stubRunner{results: map[string]runner.Result{
+		"bios-pull": {Deletions: []string{"Machines/msx.rom"}},
+	}}
+
+	p, err := Build(context.Background(), cfg, r, testPasses(), plentyOfSpace)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	for _, tp := range p.Trees {
+		if tp.Tree == "bios" && len(tp.Drift) != 1 {
+			t.Errorf("bios drift = %v, want the one item reported", tp.Drift)
+		}
 	}
 }

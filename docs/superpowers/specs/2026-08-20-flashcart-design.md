@@ -127,13 +127,19 @@ Metadata syncs as two passes:
 On first run the box is empty, so everything arrives. In steady state, local play
 counts and favourites always win. One code path covers both.
 
-### Five passes, in order
+### Six passes, in order
 
 1. bios pull
 2. roms content pull, excluding metadata and ignored paths
 3. roms metadata pull with `--ignore-existing`
 4. roms metadata push
-5. saves push
+5. saves pull with `--ignore-existing`
+6. saves push
+
+*(Amended 2026-08-20 during implementation: pass 5 was missing. Saves are
+box-owned like metadata, so without a seeding pull a cold box reads its own
+empty saves directory as the NAS archive having been deleted, offers the whole
+archive for deletion, and finishes with no saves at all.)*
 
 ### Deletion is never implicit
 
@@ -154,6 +160,33 @@ the confirmed paths and nothing else. No filter expression sits between the user
 intent and an irreversible delete. A mis-scoped `--delete` against `/userdata/saves`
 is the worst outcome this design can produce, so the mechanism is removed rather than
 guarded.
+
+### The appliance's own files are not drift
+
+*(Amended 2026-08-21, after the first plan run on the real box.)*
+
+Batocera keeps a skeleton at `/usr/share/batocera/datainit` and copies it into
+`/userdata` on every boot from `/etc/init.d/S12populateshare`: per-system
+`_info.txt` files, a few bundled homebrew ROMs, and a large set of emulator
+support data under `bios` (the bluemsx `Machines` set, FBNeo and MAME dat
+files, `NstDatabase.xml`). While the NFS exports were mounted over those
+directories none of it was reachable. Once the box owns its own copy, all of it
+is present locally and absent from the NAS: on this box, 584 paths.
+
+That reading is true and useless. Drift means the box holds something the NAS
+no longer has; these files were never the NAS's to hold. Offering them is at
+best pointless, since `S12populateshare` restores parts of the tree on the next
+boot, and at worst harmful, since the bios support data is what those emulators
+load.
+
+Local-side drift is therefore filtered against the factory root, whose contents
+are matched by relative path and excluded. The check is one-sided: a NAS-side
+path that happens to match is genuine drift, because nothing on the NAS came
+from the appliance image. Containment uses `os.Root`, so a symlink out of the
+factory tree cannot make an unrelated file look like factory content, and an
+escape is reported as *not* factory, which keeps the item visible. The count is
+reported in the plan so the exclusion is stated rather than silent, and
+`factory_root = ""` turns it off.
 
 ### Constraint this creates
 

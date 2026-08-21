@@ -6320,7 +6320,11 @@ Plan first, and read it before syncing.
 curl -s -X POST http://10.132.1.151:8474/api/plan | head -c 2000
 ```
 
-Expected: roughly 93 GB incoming, `"sufficient":true`, and **zero drift**. Non-empty drift on a seed run means the projected-state calculation from Task 8 is wrong. Stop and fix it rather than proceeding.
+Expected: roughly 93 GB incoming, `"sufficient":true`, and **zero drift**.
+
+Zero drift here depends on the factory exclusion added in v0.1.2. The local directories step 3 exposes are not empty: Batocera copies its own skeleton from `/usr/share/batocera/datainit` into `/userdata` on every boot, which the NFS mounts were hiding. On this box that is 584 paths, all of them local-only and none of them the NAS's. They are excluded from drift and counted in the plan log instead.
+
+Drift that is neither zero nor accounted for by that count means the projected-state calculation from Task 8 is wrong. Stop and fix it rather than proceeding.
 
 ```bash
 curl -s -X POST http://10.132.1.151:8474/api/sync

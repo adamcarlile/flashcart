@@ -15,13 +15,18 @@ The NAS is no longer mounted at boot. flashcart mounts it only for the
 duration of a run, reconciles the two copies, and unmounts. Nothing about
 booting depends on the network.
 
-Five rsync passes run in order:
+Six rsync passes run in order:
 
 1. BIOS pull
 2. ROM content pull
 3. ROM metadata pull, `--ignore-existing`
 4. ROM metadata push
-5. Saves push
+5. Saves pull, `--ignore-existing`
+6. Saves push
+
+The two `--ignore-existing` pulls seed a tree the box has never held. Both
+metadata and saves are box-owned, so without them a cold box would read its
+own emptiness as the NAS's copies having been deleted.
 
 Directions differ per file class because two different things share the ROMs
 tree. ROM binaries are NAS-owned, since that is where new games are added.
@@ -32,6 +37,13 @@ destroys play counts and favourites.
 Every pass is additive. Anything present on a destination but absent from its
 source is surfaced as drift and deleted only when you tick it and confirm.
 `rsync --delete` is never used for a real transfer.
+
+One exception to that reading: Batocera copies its own skeleton from
+`/usr/share/batocera/datainit` into `/userdata` on every boot, which the NFS
+mounts used to hide. Those files are local-only by construction and were never
+the NAS's to hold, so they are excluded from drift and counted in the plan log
+rather than offered for deletion. Point `factory_root` elsewhere, or set it to
+`""`, to turn that off.
 
 ## Constraint
 

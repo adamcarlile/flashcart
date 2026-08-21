@@ -263,6 +263,7 @@ async function doPlan() {
     const drifted = (body.trees || []).reduce((n, t) => n + (t.drift || []).length, 0);
     log(body.sufficient ? "g" : "e",
       `plan complete — ${humanBytes(body.requiredBytes)} in, ${drifted} drifted path(s)` +
+      (body.factoryExcluded ? ` (${body.factoryExcluded} factory path(s) ignored)` : "") +
       (body.sufficient ? "" : " — refused, insufficient space"));
   } finally {
     state.busy = false;

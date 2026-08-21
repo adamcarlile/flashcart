@@ -23,3 +23,9 @@ local = "/userdata/saves"
 # Refuse to sync if the plan would leave less than this percentage of the
 # filesystem free.
 # space_margin_percent = 10
+
+# The appliance image's own skeleton, which Batocera copies into /userdata on
+# every boot. Anything local matching a path in here is the image's, not a NAS
+# copy that has been deleted, so it is excluded from drift. Set to "" to
+# report it as drift like anything else.
+# factory_root = "/usr/share/batocera/datainit"

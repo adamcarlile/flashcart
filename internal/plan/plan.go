@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/adamcarlile/flashcart/internal/config"
+	"github.com/adamcarlile/flashcart/internal/factory"
 	"github.com/adamcarlile/flashcart/internal/pass"
 	"github.com/adamcarlile/flashcart/internal/runner"
 )
@@ -51,12 +52,17 @@ type TreePlan struct {
 
 // Plan is the whole reviewable summary.
 type Plan struct {
-	Trees         []TreePlan `json:"trees"`
-	RequiredBytes int64      `json:"requiredBytes"`
-	FreeBytes     int64      `json:"freeBytes"`
-	TotalBytes    int64      `json:"totalBytes"`
-	Sufficient    bool       `json:"sufficient"`
-	Message       string     `json:"message"`
+	Trees []TreePlan `json:"trees"`
+	// FactoryExcluded counts local paths withheld from drift because they
+	// belong to the appliance image. Reported so the UI can say what it
+	// left out: a tool whose job is to show what will change should not
+	// quietly drop hundreds of paths.
+	FactoryExcluded int    `json:"factoryExcluded"`
+	RequiredBytes   int64  `json:"requiredBytes"`
+	FreeBytes       int64  `json:"freeBytes"`
+	TotalBytes      int64  `json:"totalBytes"`
+	Sufficient      bool   `json:"sufficient"`
+	Message         string `json:"message"`
 }
 
 // FreeSpaceFunc reports free and total bytes for the filesystem holding a
@@ -76,7 +82,15 @@ var treeLabels = map[string]string{
 // NAS metadata set as absent from its empty local source and report all of it
 // as drift. Paths an earlier pass would create at this pass's source are
 // therefore subtracted before drift is reported.
+//
+// Local-side drift is filtered against the appliance image's factory tree for
+// the same reason: those paths were put there by the image, not by a NAS copy
+// that has since been deleted. See package factory.
 func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.Pass, free FreeSpaceFunc) (Plan, error) {
+	fac := factory.Open(cfg.FactoryRootPath())
+	defer fac.Close()
+	excluded := 0
+
 	// Keyed by destination directory: the set of relative paths that
 	// earlier passes would create there.
 	projected := map[string]map[string]bool{}
@@ -132,6 +146,12 @@ func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.P
 			if alreadyPlanned[rel] {
 				continue
 			}
+			// Only the box holds factory content: a NAS path that happens
+			// to share a relative path with the image is genuine drift.
+			if side == SideLocal && fac.Has(p.Tree, rel) {
+				excluded++
+				continue
+			}
 			tp.Drift = append(tp.Drift, DriftItem{Tree: p.Tree, Side: side, Rel: rel})
 		}
 
@@ -145,7 +165,7 @@ func Build(ctx context.Context, cfg *config.Config, r runner.Runner, ps []pass.P
 		}
 	}
 
-	out := Plan{}
+	out := Plan{FactoryExcluded: excluded}
 	for _, name := range order {
 		tp := trees[name]
 		out.RequiredBytes += tp.IncomingBytes

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/adamcarlile/flashcart/internal/factory"
 )
 
 // Tree is one NAS export paired with its local mirror directory.
@@ -39,6 +41,21 @@ type Config struct {
 	Server             Server `toml:"server"`
 	Trees              Trees  `toml:"trees"`
 	SpaceMarginPercent int    `toml:"space_margin_percent"`
+
+	// FactoryRoot is the appliance image's skeleton directory, whose
+	// contents are excluded from drift. It is a pointer so that an
+	// explicit empty string, which turns the exclusion off, is
+	// distinguishable from the key being absent, which takes the default.
+	FactoryRoot *string `toml:"factory_root"`
+}
+
+// FactoryRootPath returns the configured factory root, the default when the
+// key is absent, or "" when the exclusion has been explicitly disabled.
+func (c *Config) FactoryRootPath() string {
+	if c.FactoryRoot == nil {
+		return factory.DefaultRoot
+	}
+	return *c.FactoryRoot
 }
 
 // Load reads, defaults and validates a configuration file.
@@ -78,6 +95,9 @@ func (c *Config) validate(path string) error {
 	}
 	if !filepath.IsAbs(c.NAS.MountRoot) {
 		return fmt.Errorf("config %s: nas.mount_root must be absolute", path)
+	}
+	if r := c.FactoryRootPath(); r != "" && !filepath.IsAbs(r) {
+		return fmt.Errorf("config %s: factory_root must be absolute, or empty to disable", path)
 	}
 	seenLocal := map[string]string{}
 	seenExport := map[string]string{}

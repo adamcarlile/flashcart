@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adamcarlile/flashcart/internal/factory"
 )
 
 func write(t *testing.T, body string) string {
@@ -73,5 +75,44 @@ func TestLoadRejectsBadConfigs(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFactoryRootDefaultsToTheApplianceSkeleton(t *testing.T) {
+	cfg, err := Load(write(t, valid))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.FactoryRootPath(); got != factory.DefaultRoot {
+		t.Errorf("FactoryRootPath() = %q, want %q", got, factory.DefaultRoot)
+	}
+}
+
+func TestFactoryRootHonoursAnExplicitPath(t *testing.T) {
+	cfg, err := Load(write(t, "factory_root = \"/opt/datainit\"\n"+valid))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.FactoryRootPath(); got != "/opt/datainit" {
+		t.Errorf("FactoryRootPath() = %q, want /opt/datainit", got)
+	}
+}
+
+// An empty string is the off switch: it must survive applyDefaults rather
+// than being silently replaced by the default path.
+func TestFactoryRootEmptyStringDisablesTheExclusion(t *testing.T) {
+	cfg, err := Load(write(t, "factory_root = \"\"\n"+valid))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.FactoryRootPath(); got != "" {
+		t.Errorf("FactoryRootPath() = %q, want \"\"", got)
+	}
+}
+
+func TestFactoryRootMustBeAbsolute(t *testing.T) {
+	_, err := Load(write(t, "factory_root = \"datainit\"\n"+valid))
+	if err == nil || !strings.Contains(err.Error(), "factory_root") {
+		t.Errorf("Load error = %v, want one mentioning factory_root", err)
 	}
 }
