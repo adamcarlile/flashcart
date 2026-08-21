@@ -61,7 +61,7 @@ func TestParseProgress(t *testing.T) {
 		want int
 		ok   bool
 	}{
-		"    1,234,567  42%   11.20MB/s    0:00:31": {42, true},
+		"    1,234,567  42%   11.20MB/s    0:00:31":                     {42, true},
 		"   93,000,000 100%   98.00MB/s    0:00:00 (xfr#3, to-chk=0/4)": {100, true},
 		"sending incremental file list":                                 {0, false},
 		"":                                                              {0, false},

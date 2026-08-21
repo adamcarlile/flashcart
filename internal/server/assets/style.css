@@ -18,9 +18,15 @@
   --danger-soft:rgba(169,51,42,.10);
   --shadow:    0 1px 2px rgba(22,23,31,.06), 0 8px 24px -12px rgba(22,23,31,.18);
 
-  --display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
-  --ui:      "Public Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* System font stacks only: the whole product thesis is "works with no
+     network," and a car is where every page load would otherwise start
+     with a failing DNS lookup to a font CDN. Three distinct roles, no
+     embedded font binaries: a sans for UI text, a mono for paths and
+     byte/percentage figures, and a display face for headings that falls
+     back to the same sans where no rounded system face is installed. */
+  --display: ui-rounded, "SF Pro Rounded", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ui:      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono:    ui-monospace, "SF Mono", "Cascadia Code", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -245,6 +251,7 @@ button.act:disabled { opacity: .38; cursor: not-allowed; }
 .log .t { color: var(--faint); }
 .log .e { color: var(--danger); }
 .log .g { color: var(--ok); }
+.log .w { color: var(--warn); }
 
 [hidden] { display: none !important; }
 

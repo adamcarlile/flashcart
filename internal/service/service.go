@@ -20,6 +20,11 @@ const (
 	// InstallDir holds the binary and config. It is under /userdata so it
 	// survives Batocera OS updates.
 	InstallDir = "/userdata/system/flashcart"
+	// RsyncPath is where rsync lives on Batocera. Pinned explicitly rather
+	// than left to a PATH lookup: the generated script runs at boot, under
+	// whatever (possibly minimal) environment batocera-services provides,
+	// and runner.Exec otherwise falls back to a bare "rsync" PATH lookup.
+	RsyncPath = "/usr/bin/rsync"
 )
 
 // Script renders the service script. Every path is quoted so a directory
@@ -33,6 +38,7 @@ func Script(binary, config string) string {
 
 BIN=%q
 CFG=%q
+RSYNC=%q
 LOG="/userdata/system/logs/%s.log"
 PIDFILE="/var/run/%s.pid"
 
@@ -54,7 +60,7 @@ start() {
         return 0
     fi
     mkdir -p "$(dirname "$LOG")"
-    "$BIN" --config="$CFG" serve >>"$LOG" 2>&1 &
+    "$BIN" --config="$CFG" --rsync="$RSYNC" serve >>"$LOG" 2>&1 &
     echo $! > "$PIDFILE"
 }
 
@@ -62,13 +68,33 @@ stop() {
     [ -f "$PIDFILE" ] || return 0
     pid=$(cat "$PIDFILE")
     kill "$pid" 2>/dev/null
-    # Wait for the process to actually exit, with timeout
+    # Wait for the process to actually exit. This must run past
+    # flashcart's own graceful shutdown budget (10s: cancel an in-flight
+    # sync, release the NFS mount) or a legitimate slow shutdown gets
+    # mistaken for a hang, restart proceeds to start() while the old
+    # process is still bound to the port, and the new process dies with
+    # EADDRINUSE while the pidfile is left pointing at a PID that no
+    # longer means anything useful.
     n=0
-    while kill -0 "$pid" 2>/dev/null && [ $n -lt 50 ]; do
+    while kill -0 "$pid" 2>/dev/null && [ $n -lt 120 ]; do
         sleep 0.1
         n=$((n + 1))
     done
-    rm -f "$PIDFILE"
+    # Still alive past the budget: it is genuinely stuck, not just slow.
+    # Force it, then wait for that to land before trusting it is gone.
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null
+        n=0
+        while kill -0 "$pid" 2>/dev/null && [ $n -lt 20 ]; do
+            sleep 0.1
+            n=$((n + 1))
+        done
+    fi
+    # Only remove the pidfile once the process is confirmed gone. restart
+    # calls start() right after this returns; if the pidfile were removed
+    # unconditionally, start() would see "not running" and launch a
+    # second instance while the first is still shutting down.
+    kill -0 "$pid" 2>/dev/null || rm -f "$PIDFILE"
 }
 
 status() {
@@ -83,7 +109,7 @@ case "$1" in
     status)  status ;;
     *)       echo "usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
 esac
-`, Name, binary, config, Name, Name)
+`, Name, binary, config, RsyncPath, Name, Name)
 }
 
 // Install writes the service script and enables it.

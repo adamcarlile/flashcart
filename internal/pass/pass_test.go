@@ -35,6 +35,7 @@ func TestPassOrderAndDirections(t *testing.T) {
 		"roms-content-pull",
 		"roms-metadata-pull",
 		"roms-metadata-push",
+		"saves-pull",
 		"saves-push",
 	}
 	var gotIDs []string
@@ -88,6 +89,38 @@ func TestPullAndPushEndpointsAreCorrect(t *testing.T) {
 	if got := byID["saves-push"].Dst; got != "/var/run/flashcart/nas/saves/" {
 		t.Errorf("saves push Dst = %q", got)
 	}
+	if got := byID["saves-pull"].Src; got != "/var/run/flashcart/nas/saves/" {
+		t.Errorf("saves pull Src = %q", got)
+	}
+	if got := byID["saves-pull"].Dst; got != "/userdata/saves/" {
+		t.Errorf("saves pull Dst = %q", got)
+	}
+}
+
+// CRITICAL 1: saves must be seeded from the NAS before they are pushed,
+// exactly mirroring the metadata seed pattern, or a first run against an
+// empty local saves tree offers the entire NAS save archive for deletion.
+func TestSeedPullsPrecedeTheirPush(t *testing.T) {
+	ps := Passes(testConfig(), testMounts())
+	var gotIDs []string
+	for _, p := range ps {
+		gotIDs = append(gotIDs, p.ID)
+	}
+	idx := func(id string) int {
+		for i, got := range gotIDs {
+			if got == id {
+				return i
+			}
+		}
+		t.Fatalf("pass %q not found in %v", id, gotIDs)
+		return -1
+	}
+	if idx("roms-metadata-pull") >= idx("roms-metadata-push") {
+		t.Error("roms-metadata-pull must run before roms-metadata-push")
+	}
+	if idx("saves-pull") >= idx("saves-push") {
+		t.Error("saves-pull must run before saves-push")
+	}
 }
 
 func TestMetadataPullIgnoresExisting(t *testing.T) {
@@ -100,6 +133,22 @@ func TestMetadataPullIgnoresExisting(t *testing.T) {
 	}
 	if slices.Contains(byID["roms-metadata-push"].Extra, "--ignore-existing") {
 		t.Error("metadata push must not carry --ignore-existing")
+	}
+}
+
+// CRITICAL 1: saves-pull must mirror roms-metadata-pull's seed shape
+// exactly, since that is the only reason it cancels push-side drift for
+// free via the existing projected-state calculation.
+func TestSavesPullIgnoresExisting(t *testing.T) {
+	byID := map[string]Pass{}
+	for _, p := range Passes(testConfig(), testMounts()) {
+		byID[p.ID] = p
+	}
+	if !slices.Contains(byID["saves-pull"].Extra, "--ignore-existing") {
+		t.Error("saves-pull must carry --ignore-existing so the box's own saves always win")
+	}
+	if slices.Contains(byID["saves-push"].Extra, "--ignore-existing") {
+		t.Error("saves-push must not carry --ignore-existing")
 	}
 }
 
@@ -116,15 +165,78 @@ func TestRealRunsNeverDelete(t *testing.T) {
 	}
 }
 
-// --delete is only ever used to enumerate, and only alongside -n.
+// --delete is only ever used to enumerate, and only alongside -n, and only
+// on passes that run with their tree's ownership grain (see
+// TestOwnershipContraryPassesNeverDelete for the other half of this
+// property).
 func TestDryRunsDeleteOnlyWithDryRunFlag(t *testing.T) {
 	for _, p := range Passes(testConfig(), testMounts()) {
 		args := p.DryRunArgs()
+		if !p.WithGrain {
+			continue
+		}
 		if !slices.Contains(args, "--delete") {
 			t.Errorf("%s: DryRunArgs must carry --delete to enumerate drift: %v", p.ID, args)
 		}
 		if !slices.Contains(args, "-n") {
 			t.Fatalf("%s: DryRunArgs carries --delete without -n: %v", p.ID, args)
+		}
+	}
+}
+
+// CRITICAL 2: a pass running against its tree's ownership grain (the
+// metadata and saves seed pulls) must never carry --delete, however this
+// is decided. Anything present on its destination that is absent from its
+// source is new, not-yet-synced work on the ownership-authoritative side
+// (a freshly scraped image, a save the box just wrote), not drift — and
+// the exact two passes affected are the ones with an empty local tree on a
+// first run: roms-metadata-pull and saves-pull. Doing this structurally
+// (a field on Pass, read only by DryRunArgs) means a future pass cannot
+// reintroduce the bug by omission at some other call site.
+func TestOwnershipContraryPassesNeverDelete(t *testing.T) {
+	wantNoGrain := map[string]bool{"roms-metadata-pull": true, "saves-pull": true}
+	for _, p := range Passes(testConfig(), testMounts()) {
+		if !wantNoGrain[p.ID] {
+			continue
+		}
+		if p.WithGrain {
+			t.Errorf("%s: WithGrain = true, want false (this pass runs against its tree's ownership)", p.ID)
+		}
+		args := p.DryRunArgs()
+		if slices.Contains(args, "--delete") {
+			t.Errorf("%s: DryRunArgs carries --delete despite running against the ownership grain: %v", p.ID, args)
+		}
+	}
+	// The grain-aligned passes are unaffected: still checked in
+	// TestDryRunsDeleteOnlyWithDryRunFlag above.
+	wantGrain := []string{"bios-pull", "roms-content-pull", "roms-metadata-push", "saves-push"}
+	for _, p := range Passes(testConfig(), testMounts()) {
+		if !slices.Contains(wantGrain, p.ID) {
+			continue
+		}
+		if !p.WithGrain {
+			t.Errorf("%s: WithGrain = false, want true", p.ID)
+		}
+	}
+}
+
+// IMPORTANT 6: -a implies -o -g, which would have rsync chown the NAS's
+// own files to the box's uid/gid on every push. Pull passes are unaffected:
+// the box legitimately owns its own local mirror.
+func TestPushPassesDropOwnerAndGroup(t *testing.T) {
+	for _, p := range Passes(testConfig(), testMounts()) {
+		for name, args := range map[string][]string{"dry": p.DryRunArgs(), "run": p.RunArgs()} {
+			hasNoO := slices.Contains(args, "--no-o")
+			hasNoG := slices.Contains(args, "--no-g")
+			if p.Direction == DirPush {
+				if !hasNoO || !hasNoG {
+					t.Errorf("%s %s: push pass must carry --no-o and --no-g: %v", p.ID, name, args)
+				}
+			} else {
+				if hasNoO || hasNoG {
+					t.Errorf("%s %s: pull pass must not carry --no-o/--no-g: %v", p.ID, name, args)
+				}
+			}
 		}
 	}
 }
@@ -160,10 +272,10 @@ func TestAllEndpointMappings(t *testing.T) {
 	}
 
 	tests := []struct {
-		id        string
-		wantSrc   string
-		wantDst   string
-		wantDir   Direction
+		id      string
+		wantSrc string
+		wantDst string
+		wantDir Direction
 	}{
 		{
 			id:      "bios-pull",
@@ -188,6 +300,12 @@ func TestAllEndpointMappings(t *testing.T) {
 			wantSrc: "/userdata/roms/",
 			wantDst: "/var/run/flashcart/nas/roms/",
 			wantDir: DirPush,
+		},
+		{
+			id:      "saves-pull",
+			wantSrc: "/var/run/flashcart/nas/saves/",
+			wantDst: "/userdata/saves/",
+			wantDir: DirPull,
 		},
 		{
 			id:      "saves-push",
@@ -226,7 +344,7 @@ func TestAllFilterSets(t *testing.T) {
 	}
 
 	tests := []struct {
-		id         string
+		id          string
 		wantFilters []string
 	}{
 		{
@@ -244,6 +362,10 @@ func TestAllFilterSets(t *testing.T) {
 		{
 			id:          "roms-metadata-push",
 			wantFilters: paths.MetadataFilters(),
+		},
+		{
+			id:          "saves-pull",
+			wantFilters: paths.PlainFilters(),
 		},
 		{
 			id:          "saves-push",

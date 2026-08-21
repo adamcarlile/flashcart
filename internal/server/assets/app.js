@@ -1,21 +1,26 @@
 const $ = (id) => document.getElementById(id);
 
 // The pass sequence is the mental model, so it is rendered before any run
-// rather than appearing for the first time during one.
+// rather than appearing for the first time during one. Metadata and saves
+// are both box-owned, so each is seeded from the NAS with --ignore-existing
+// before it is pushed: on an empty local tree (e.g. saves on a first run)
+// this brings the box's copy down first rather than the push mistaking
+// that emptiness for the NAS's copies having been deleted.
 const PASSES = [
   { id: "bios-pull",          n: 1, name: "BIOS",          dir: "in"  },
   { id: "roms-content-pull",  n: 2, name: "ROM content",   dir: "in"  },
   { id: "roms-metadata-pull", n: 3, name: "Metadata seed", dir: "in"  },
   { id: "roms-metadata-push", n: 4, name: "Metadata",      dir: "out" },
-  { id: "saves-push",         n: 5, name: "Saves",         dir: "out" },
+  { id: "saves-pull",         n: 5, name: "Saves seed",    dir: "in"  },
+  { id: "saves-push",         n: 6, name: "Saves",         dir: "out" },
 ];
 
-// BIOS pulls only, Saves pushes only, ROMs does both. The asymmetry is what
-// teaches the split.
+// BIOS pulls only, ROMs and Saves both do a seed pull then a push. The
+// asymmetry against BIOS is what teaches the split.
 const TREES = [
   { key: "roms",  name: "ROMs",  tag: "split" },
   { key: "bios",  name: "BIOS",  tag: "pull"  },
-  { key: "saves", name: "Saves", tag: "push"  },
+  { key: "saves", name: "Saves", tag: "split" },
 ];
 
 const state = { status: null, plan: null, progress: {}, err: {}, busy: false };
@@ -293,6 +298,11 @@ function connectEvents() {
       state.progress[m.passId] = m.ok ? "done" : "failed";
       if (!m.ok) state.err[m.passId] = m.err;
       log(m.ok ? "g" : "e", `${m.label || m.passId}: ${m.ok ? "ok" : "FAILED"}`);
+      // A pass can succeed under a tolerated rsync condition (some files
+      // vanished or could not be transferred — routine on a live tree)
+      // rather than a clean run. The pass is still OK; the warning must
+      // still reach the user rather than being swallowed.
+      if (m.warning) log("w", `${m.label || m.passId}: ${m.warning}`);
       renderPasses();
     } else if (m.type === "done") {
       state.busy = false;
@@ -301,6 +311,13 @@ function connectEvents() {
           "Remaining passes were abandoned. Nothing was deleted. The NAS was unmounted.");
       }
       log(m.ok ? "g" : "e", m.ok ? "sync complete" : "sync failed: " + m.err);
+      // A sync moves files on both sides, so whatever the last plan showed
+      // (including its drift list) describes a tree state that no longer
+      // exists. The server already refuses to authorise a deletion against
+      // it; hide it here too rather than leaving a stale plan on screen.
+      state.plan = null;
+      renderTrees();
+      renderDrift();
       refreshStatus();
     }
   };

@@ -14,7 +14,7 @@ type message struct {
 	Percent int    `json:"percent,omitempty"`
 	OK      bool   `json:"ok,omitempty"`
 	Err     string `json:"err,omitempty"`
-	Message string `json:"message,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 // Hub fans one broadcast out to every connected browser.
@@ -44,6 +44,21 @@ func (h *Hub) unsubscribe(ch chan message) {
 		close(ch)
 	}
 	h.mu.Unlock()
+}
+
+// closeAll force-closes every currently connected subscriber. serveSSE's
+// select sees the closed channel and returns, ending that handler, which is
+// what lets http.Server.Shutdown finish promptly instead of blocking on a
+// browser tab left open: an SSE connection otherwise stays open until the
+// client disconnects on its own, and Shutdown does not force-close active
+// handlers, only waits for them.
+func (h *Hub) closeAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subs {
+		delete(h.subs, ch)
+		close(ch)
+	}
 }
 
 // broadcast delivers to every subscriber, dropping messages for any

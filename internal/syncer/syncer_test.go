@@ -15,6 +15,8 @@ type scriptRunner struct {
 	ran     []string
 	failOn  string
 	failErr error
+	warnOn  string
+	warnMsg string
 }
 
 func (s *scriptRunner) DryRun(context.Context, pass.Pass) (runner.Result, error) {
@@ -26,6 +28,9 @@ func (s *scriptRunner) Run(_ context.Context, p pass.Pass, events chan<- runner.
 	events <- runner.Event{PassID: p.ID, Percent: 100}
 	if p.ID == s.failOn {
 		return runner.Result{PassID: p.ID}, s.failErr
+	}
+	if p.ID == s.warnOn {
+		return runner.Result{PassID: p.ID, Warning: s.warnMsg}, nil
 	}
 	return runner.Result{PassID: p.ID}, nil
 }
@@ -56,7 +61,7 @@ func TestRunExecutesAllPassesInOrder(t *testing.T) {
 	if !sum.OK {
 		t.Fatalf("Summary.OK = false: %s", sum.Err)
 	}
-	want := []string{"bios-pull", "roms-content-pull", "roms-metadata-pull", "roms-metadata-push", "saves-push"}
+	want := []string{"bios-pull", "roms-content-pull", "roms-metadata-pull", "roms-metadata-push", "saves-pull", "saves-push"}
 	if len(r.ran) != len(want) {
 		t.Fatalf("ran %v, want %v", r.ran, want)
 	}
@@ -93,6 +98,39 @@ func TestFailureAbandonsRemainingPasses(t *testing.T) {
 	}
 	if got := sum.Passes[0]; !got.OK {
 		t.Errorf("earlier successful pass recorded as %+v", got)
+	}
+}
+
+// IMPORTANT 6: a pass that completed under a tolerated rsync exit code
+// (23 or 24, surfaced by the runner as a Result carrying Warning rather
+// than an error) must not abort the run — those exits are routine on a
+// live, half-million-file tree — and the warning must reach the summary
+// so it is surfaced to the user rather than swallowed.
+func TestPartialSuccessWarningDoesNotAbandonTheRun(t *testing.T) {
+	r := &scriptRunner{warnOn: "roms-content-pull", warnMsg: "rsync roms-content-pull completed with warnings (exit 24: some files vanished before they could be transferred)"}
+	events := make(chan runner.Event, 64)
+	drain(events)
+
+	sum := Run(context.Background(), r, testPasses(), events)
+
+	if !sum.OK {
+		t.Fatalf("Summary.OK = false after only a tolerated partial-success warning: %s", sum.Err)
+	}
+	want := []string{"bios-pull", "roms-content-pull", "roms-metadata-pull", "roms-metadata-push", "saves-pull", "saves-push"}
+	if len(r.ran) != len(want) {
+		t.Fatalf("ran %v, want all passes to run: %v", r.ran, want)
+	}
+
+	byID := map[string]PassResult{}
+	for _, pr := range sum.Passes {
+		byID[pr.ID] = pr
+	}
+	got := byID["roms-content-pull"]
+	if !got.OK {
+		t.Errorf("roms-content-pull recorded as failed: %+v", got)
+	}
+	if got.Warning == "" {
+		t.Error("the partial-success warning was not carried into the pass result")
 	}
 }
 

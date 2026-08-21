@@ -57,11 +57,11 @@ func TestLoadAppliesDefaults(t *testing.T) {
 
 func TestLoadRejectsBadConfigs(t *testing.T) {
 	cases := map[string]struct{ body, want string }{
-		"no host":          {strings.Replace(valid, `host = "10.132.1.25"`, `host = ""`, 1), "nas.host"},
-		"relative export":  {strings.Replace(valid, `export = "/volume2/retrogaming/roms"`, `export = "retrogaming/roms"`, 1), "must be absolute"},
-		"relative local":   {strings.Replace(valid, `local = "/userdata/bios"`, `local = "userdata/bios"`, 1), "must be absolute"},
-		"missing saves":    {strings.Split(valid, "[trees.saves]")[0], "trees.saves"},
-		"duplicate local":  {strings.Replace(valid, `local = "/userdata/bios"`, `local = "/userdata/roms"`, 1), "duplicate"},
+		"no host":         {strings.Replace(valid, `host = "10.132.1.25"`, `host = ""`, 1), "nas.host"},
+		"relative export": {strings.Replace(valid, `export = "/volume2/retrogaming/roms"`, `export = "retrogaming/roms"`, 1), "must be absolute"},
+		"relative local":  {strings.Replace(valid, `local = "/userdata/bios"`, `local = "userdata/bios"`, 1), "must be absolute"},
+		"missing saves":   {strings.Split(valid, "[trees.saves]")[0], "trees.saves"},
+		"duplicate local": {strings.Replace(valid, `local = "/userdata/bios"`, `local = "/userdata/roms"`, 1), "duplicate"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -67,13 +68,41 @@ func (e *Exec) Run(ctx context.Context, p pass.Pass, events chan<- Event) (Resul
 		}
 	}
 	scanErr := sc.Err()
-	if err := cmd.Wait(); err != nil {
-		return Result{PassID: p.ID}, fmt.Errorf("rsync %s: %w: %s", p.ID, err, strings.TrimSpace(stderr.String()))
-	}
+	waitErr := cmd.Wait()
 	if scanErr != nil {
 		return Result{PassID: p.ID}, fmt.Errorf("rsync %s: %w", p.ID, scanErr)
 	}
+	if waitErr != nil {
+		if reason, ok := partialSuccessReason(waitErr); ok {
+			return Result{PassID: p.ID, Warning: fmt.Sprintf(
+				"rsync %s completed with warnings (%s): %s", p.ID, reason, strings.TrimSpace(stderr.String()),
+			)}, nil
+		}
+		return Result{PassID: p.ID}, fmt.Errorf("rsync %s: %w: %s", p.ID, waitErr, strings.TrimSpace(stderr.String()))
+	}
 	return Result{PassID: p.ID}, nil
+}
+
+// partialSuccessReason reports whether err is an rsync exit code that is
+// routine on a large, live tree rather than a genuine failure: 23 ("some
+// files could not be transferred") and 24 ("some files vanished before
+// they could be transferred"). Both are expected outcomes of syncing
+// against a tree EmulationStation and the scraper can mutate concurrently
+// — the spec's own accepted risk of gamelist.xml being rewritten mid-push
+// is exactly exit 24. No other exit code is tolerated: syncer.Run still
+// abandons the remaining passes for anything else.
+func partialSuccessReason(err error) (string, bool) {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return "", false
+	}
+	switch ee.ExitCode() {
+	case 23:
+		return "exit 23: some files could not be transferred", true
+	case 24:
+		return "exit 24: some files vanished before they could be transferred", true
+	}
+	return "", false
 }
 
 // scanLinesOrCR splits on either a newline or a carriage return, because

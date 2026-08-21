@@ -203,19 +203,31 @@ func (b *Backend) script() map[string]runner.Result {
 func scriptFor(s Scenario) map[string]runner.Result {
 	switch s {
 	case ScenarioSeed:
-		// Empty box: everything arrives. The metadata push sees the NAS
-		// copies as absent from its source, which the projected-state
-		// calculation must cancel out to yield no drift.
-		var deletions []string
+		// Empty box: everything arrives, on both the ROMs and saves trees.
+		// The metadata push and the saves push each see the NAS's own
+		// copies as absent from their (still-empty) local source, which
+		// the projected-state calculation must cancel out to yield no
+		// drift — CRITICAL 1: before saves-pull existed, this scenario
+		// modelled an empty NAS saves tree instead (saves-push: result(nil)
+		// with nothing on the NAS either), which is exactly the shape that
+		// hid the bug: with a genuinely full NAS archive and an empty local
+		// tree, every save was offered for deletion at the moment no local
+		// copy existed.
+		var metaDeletions []string
 		for _, c := range metadata() {
-			deletions = append(deletions, c.Path)
+			metaDeletions = append(metaDeletions, c.Path)
+		}
+		var saveDeletions []string
+		for _, c := range saves() {
+			saveDeletions = append(saveDeletions, c.Path)
 		}
 		return map[string]runner.Result{
 			"bios-pull":          result([]runner.Change{{Itemize: ">f+++++++++", Size: 579 * mib, Path: "bios.pack"}}),
 			"roms-content-pull":  result(content()),
 			"roms-metadata-pull": result(metadata()),
-			"roms-metadata-push": result(nil, deletions...),
-			"saves-push":         result(nil),
+			"roms-metadata-push": result(nil, metaDeletions...),
+			"saves-pull":         result(saves()),
+			"saves-push":         result(nil, saveDeletions...),
 		}
 
 	case ScenarioSteady:
@@ -230,6 +242,7 @@ func scriptFor(s Scenario) map[string]runner.Result {
 				{Itemize: ">f.st......", Size: 502 * kib, Path: "snes/gamelist.xml"},
 				{Itemize: ">f.st......", Size: 227 * kib, Path: "megadrive/gamelist.xml"},
 			}),
+			"saves-pull": result(nil),
 			"saves-push": result([]runner.Change{
 				{Itemize: ">f.st......", Size: 32 * kib, Path: "snes/Terranigma (Europe).srm"},
 			}),
@@ -245,7 +258,11 @@ func scriptFor(s Scenario) map[string]runner.Result {
 			),
 			"roms-metadata-pull": result(nil),
 			// A push deletes on the NAS, so this drift sits on the NAS.
+			// saves-pull brings nothing new down, so it does not explain
+			// away psx/Retired Save.mcd: the box genuinely no longer has
+			// it, so it is genuine drift, not a seed-run artifact.
 			"roms-metadata-push": result(nil, "dreamcast/images/Deleted Game-image.png"),
+			"saves-pull":         result(nil),
 			"saves-push":         result(nil, "psx/Retired Save.mcd"),
 		}
 
@@ -255,6 +272,7 @@ func scriptFor(s Scenario) map[string]runner.Result {
 			"roms-content-pull":  result(content()),
 			"roms-metadata-pull": result(metadata()),
 			"roms-metadata-push": result(nil),
+			"saves-pull":         result(nil),
 			"saves-push":         result(nil),
 		}
 
@@ -264,6 +282,7 @@ func scriptFor(s Scenario) map[string]runner.Result {
 			"roms-content-pull":  result(content()),
 			"roms-metadata-pull": result(nil),
 			"roms-metadata-push": result(nil),
+			"saves-pull":         result(nil),
 			"saves-push":         result(nil),
 		}
 	}

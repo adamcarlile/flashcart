@@ -233,11 +233,19 @@ func serve(o Options, stdout io.Writer) error {
 		// Cancel background work (an in-flight sync) first, so its rsync
 		// child is killed and its deferred unmount runs, before the HTTP
 		// server stops accepting the SSE/status requests that surface
-		// that shutdown to a browser.
+		// that shutdown to a browser. Shutdown also force-closes any live
+		// SSE stream, so a browser tab left open does not hold
+		// srv.Shutdown blocked for its full timeout below.
 		app.Shutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		err := srv.Shutdown(shutdownCtx)
+		// Join the sync goroutine before returning, so process exit is
+		// bounded by that work (including its deferred unmount) actually
+		// finishing, rather than by srv.Shutdown's timing happening to
+		// have been slow enough to cover it.
+		app.Wait()
+		return err
 	}
 }
 

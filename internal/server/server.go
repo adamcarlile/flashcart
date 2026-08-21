@@ -41,6 +41,13 @@ type App struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// wg covers background sync work spawned by handleSync. Shutdown
+	// cancels that work but does not itself wait for it to actually
+	// finish (its deferred unmount included); wg is what a caller joins
+	// to know it truly has, rather than assuming the process's own exit
+	// timing happened to be slow enough.
+	wg sync.WaitGroup
+
 	mu          sync.Mutex
 	busy        bool
 	lastSummary *syncer.Summary
@@ -91,15 +98,33 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) { a.mux.ServeHTT
 // ctx.Err() rather than being killed out from under it.
 //
 // Shutdown does not stop the HTTP server; callers are also expected to call
-// http.Server.Shutdown.
+// http.Server.Shutdown. It also force-closes every connected SSE stream, so
+// a browser tab left open does not hold http.Server.Shutdown open for its
+// full timeout: Shutdown only waits for active handlers to return on their
+// own, and a live SSE connection otherwise never does until the client
+// disconnects.
+//
+// Shutdown does not itself wait for the cancelled work to finish; call Wait
+// for that.
 func (a *App) Shutdown() {
 	a.cancel()
+	a.hub.closeAll()
+}
+
+// Wait blocks until every background sync goroutine started by handleSync
+// has returned, including its deferred unmount. Callers should call this
+// after Shutdown so process exit is bounded by the work actually
+// finishing, not by however long http.Server.Shutdown happened to take.
+func (a *App) Wait() {
+	a.wg.Wait()
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("server: encode response: %v", err)
+	}
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
@@ -268,7 +293,13 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 	// a.ctx is what Shutdown cancels on process termination, so the rsync
 	// child gets killed and the NFS mount gets released instead of being
 	// orphaned by an instant SIGTERM exit.
+	//
+	// wg is added before the goroutine starts and released when it returns,
+	// so a caller that has called Shutdown can also call Wait and know this
+	// goroutine, including its deferred unmount, has genuinely finished.
+	a.wg.Add(1)
 	go func() {
+		defer a.wg.Done()
 		defer a.release()
 		ctx := a.ctx
 
@@ -277,7 +308,7 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer close(done)
 			for e := range events {
-				a.hub.broadcast(message{Type: "progress", PassID: e.PassID, Percent: e.Percent, Message: e.Message})
+				a.hub.broadcast(message{Type: "progress", PassID: e.PassID, Percent: e.Percent})
 			}
 		}()
 
@@ -294,12 +325,20 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 			sum.Err = err.Error()
 		}
 		for _, p := range sum.Passes {
-			a.hub.broadcast(message{Type: "pass", PassID: p.ID, Label: p.Label, OK: p.OK, Err: p.Err})
+			a.hub.broadcast(message{Type: "pass", PassID: p.ID, Label: p.Label, OK: p.OK, Err: p.Err, Warning: p.Warning})
 		}
 
 		a.mu.Lock()
 		a.lastSummary = &sum
 		a.lastSyncAt = time.Now()
+		// The world just changed underneath whatever the last /api/plan
+		// showed: a completed sync moves files on both sides, so paths
+		// confirmedDrift remembers as "shown to the user" may no longer
+		// exist, and new drift may now exist that was never shown. Clear
+		// it so a stale plan can never authorise a deletion against a
+		// tree state that predates this sync — mirroring the same
+		// invariant handleDriftConfirm already enforces across a delete.
+		a.confirmedDrift = nil
 		a.mu.Unlock()
 
 		a.hub.broadcast(message{Type: "done", OK: sum.OK, Err: sum.Err})

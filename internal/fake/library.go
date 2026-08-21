@@ -89,6 +89,28 @@ func metadata() []runner.Change {
 	return out
 }
 
+// saves synthesises the box's per-game save files, mirroring the ~0.6 GB
+// measured on the real box: one save per game, at realistic save/memory
+// card sizes. psx uses the memory-card extension observed on the real
+// library; everything else uses the generic emulator save-state extension.
+func saves() []runner.Change {
+	var out []runner.Change
+	for _, s := range library {
+		ext := ".srm"
+		if s.name == "psx" {
+			ext = ".mcd"
+		}
+		for i := 0; i < s.games; i++ {
+			out = append(out, runner.Change{
+				Itemize: ">f+++++++++",
+				Size:    32 * kib,
+				Path:    fmt.Sprintf("%s/Game %03d (USA)%s", s.name, i+1, ext),
+			})
+		}
+	}
+	return out
+}
+
 func bytesOf(cs []runner.Change) int64 {
 	var n int64
 	for _, c := range cs {

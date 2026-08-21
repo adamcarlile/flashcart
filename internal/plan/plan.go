@@ -1,4 +1,4 @@
-// Package plan turns dry runs of the five passes into a reviewable summary:
+// Package plan turns dry runs of the six passes into a reviewable summary:
 // what would move, in which direction, and what would be left behind.
 package plan
 

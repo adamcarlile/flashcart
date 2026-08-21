@@ -1,4 +1,4 @@
-// Package syncer runs the five passes in order for real, emitting progress
+// Package syncer runs the six passes in order for real, emitting progress
 // and stopping at the first failure.
 package syncer
 
@@ -15,6 +15,9 @@ type PassResult struct {
 	Label string `json:"label"`
 	OK    bool   `json:"ok"`
 	Err   string `json:"err,omitempty"`
+	// Warning carries a tolerated non-fatal rsync condition (exit 23 or
+	// 24) surfaced to the user rather than swallowed. The pass is still OK.
+	Warning string `json:"warning,omitempty"`
 }
 
 // Summary is the outcome of a whole run.
@@ -34,8 +37,8 @@ func Run(ctx context.Context, r runner.Runner, ps []pass.Pass, events chan<- run
 			sum.Err = err.Error()
 			return sum
 		}
-		_, err := r.Run(ctx, p, events)
-		pr := PassResult{ID: p.ID, Label: p.Label, OK: err == nil}
+		res, err := r.Run(ctx, p, events)
+		pr := PassResult{ID: p.ID, Label: p.Label, OK: err == nil, Warning: res.Warning}
 		if err != nil {
 			pr.Err = err.Error()
 			sum.Passes = append(sum.Passes, pr)

@@ -44,36 +44,25 @@ func testPasses() []pass.Pass {
 
 func plentyOfSpace(string) (int64, int64, error) { return 400 << 30, 459 << 30, nil }
 
-// The behaviour that makes a first run legible instead of alarming.
-func TestSeedRunReportsNoDrift(t *testing.T) {
-	// Local is empty. The metadata pull would create both files; the
-	// metadata push therefore sees them as absent from its source and would
-	// naively call them drift.
-	r := stubRunner{results: map[string]runner.Result{
-		"roms-metadata-pull": {
-			Changes: []runner.Change{
-				{Itemize: ">f+++++++++", Size: 502062, Path: "snes/gamelist.xml"},
-				{Itemize: ">f+++++++++", Size: 181000, Path: "snes/images/ActRaiser (USA)-image.png"},
-			},
-			TransferBytes: 683062,
-		},
-		"roms-metadata-push": {
-			Deletions: []string{"snes/gamelist.xml", "snes/images/ActRaiser (USA)-image.png"},
-		},
-	}}
+// TestSeedRunReportsNoDrift is a real-rsync integration test: see
+// seed_integration_test.go. CRITICAL 3: this used to be a stub-based test
+// right here, and the stub's saves data was simply absent — modelling an
+// empty NAS saves tree, i.e. the exact seed-shaped world CRITICAL 1's bug
+// lived in. A fix that left that fixture alone would have left the trap
+// armed, so the case that matters (a genuinely populated NAS saves archive
+// against an empty local tree) is now exercised against real rsync instead
+// of a hand-written stub that can silently omit the one tree that mattered.
 
-	p, err := Build(context.Background(), testCfg(), r, testPasses(), plentyOfSpace)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	for _, tp := range p.Trees {
-		if len(tp.Drift) != 0 {
-			t.Errorf("tree %s reported drift on a seed run: %+v", tp.Tree, tp.Drift)
-		}
-	}
-}
-
-// Genuine drift, not covered by any earlier pass, must still be reported.
+// Genuine drift — something the source really has lost, not an artifact of
+// this run's own seed passes not having "happened" yet in a dry run — must
+// still be reported. CRITICAL 3: before saves-pull existed (CRITICAL 1),
+// saves-push had no earlier pass to check its deletions against at all, so
+// this test's own "genuine" saves-push assertion was indistinguishable from
+// the seed-run bug's symptom: any deletion looked the same, whether it came
+// from a real, isolated removal or from local simply being empty. Now that
+// saves-pull exists, this demonstrates the same discrimination the metadata
+// case already relied on: one item is cancelled because the matching pull
+// would have re-seeded it, the other survives because it would not.
 func TestGenuineDriftIsReported(t *testing.T) {
 	r := stubRunner{results: map[string]runner.Result{
 		"roms-metadata-pull": {
@@ -82,8 +71,11 @@ func TestGenuineDriftIsReported(t *testing.T) {
 		"roms-metadata-push": {
 			Deletions: []string{"snes/gamelist.xml", "megadrive/gamelist.xml"},
 		},
+		"saves-pull": {
+			Changes: []runner.Change{{Itemize: ">f+++++++++", Size: 10, Path: "psx/Chrono Trigger.mcd"}},
+		},
 		"saves-push": {
-			Deletions: []string{"snes/OldGame.srm"},
+			Deletions: []string{"psx/Chrono Trigger.mcd", "snes/OldGame.srm"},
 		},
 	}}
 
@@ -110,7 +102,10 @@ func TestGenuineDriftIsReported(t *testing.T) {
 	}
 
 	savesDrift := byTree["saves"].Drift
-	if len(savesDrift) != 1 || savesDrift[0].Side != SideNAS {
+	if len(savesDrift) != 1 {
+		t.Fatalf("saves drift = %+v, want exactly snes/OldGame.srm (psx/Chrono Trigger.mcd must be cancelled by saves-pull)", savesDrift)
+	}
+	if savesDrift[0].Rel != "snes/OldGame.srm" || savesDrift[0].Side != SideNAS {
 		t.Errorf("saves drift = %+v", savesDrift)
 	}
 }

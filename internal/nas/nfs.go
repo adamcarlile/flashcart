@@ -27,6 +27,14 @@ var (
 // no network attached.
 const probeTimeout = time.Second
 
+// unmountTimeout bounds a single umount call. Without it, a hung umount
+// (the NFS export vanishing at exactly the wrong moment) blocks the
+// deferred unmount indefinitely, which blocks the caller's release of the
+// single-flight lock, locking Plan and Sync out until restart — the
+// unmount is deferred specifically so it always runs, so it must always be
+// able to return.
+const unmountTimeout = 30 * time.Second
+
 // NFS mounts the three exports for the duration of a run and unmounts them
 // afterwards. Nothing at boot depends on the NAS existing.
 type NFS struct {
@@ -37,7 +45,7 @@ type NFS struct {
 	// runMount and runUnmount are function fields for testability.
 	// Tests can inject fake implementations; production uses exec.Command.
 	runMount   func(ctx context.Context, opts, src, target string) ([]byte, error)
-	runUnmount func(target string) error
+	runUnmount func(ctx context.Context, target string) ([]byte, error)
 }
 
 // NewNFS returns a Provider backed by real NFS mounts.
@@ -48,8 +56,8 @@ func NewNFS(cfg *config.Config) *NFS {
 		runMount: func(ctx context.Context, opts, src, target string) ([]byte, error) {
 			return exec.CommandContext(ctx, "mount", "-t", "nfs4", "-o", opts, src, target).CombinedOutput()
 		},
-		runUnmount: func(target string) error {
-			return exec.Command("umount", target).Run()
+		runUnmount: func(ctx context.Context, target string) ([]byte, error) {
+			return exec.CommandContext(ctx, "umount", target).CombinedOutput()
 		},
 	}
 }
@@ -90,10 +98,23 @@ func (n *NFS) Mount(ctx context.Context) (Mounts, func() error, error) {
 	var mounted []string
 	unmount := func() error {
 		var firstErr error
-		// Unmount in reverse order.
+		// Unmount in reverse order. Bounded by its own timeout derived
+		// from context.Background(), deliberately not from the ctx this
+		// Mount call received: unmount runs deferred, including when that
+		// ctx has just been cancelled (e.g. on shutdown), and unmount must
+		// still be able to run rather than fail instantly against an
+		// already-dead context.
 		for i := len(mounted) - 1; i >= 0; i-- {
-			if err := n.runUnmount(mounted[i]); err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("umount %s: %w", mounted[i], err)
+			uctx, cancel := context.WithTimeout(context.Background(), unmountTimeout)
+			out, err := n.runUnmount(uctx, mounted[i])
+			cancel()
+			if err != nil && firstErr == nil {
+				exit := 0
+				var ee *exec.ExitError
+				if errors.As(err, &ee) {
+					exit = ee.ExitCode()
+				}
+				firstErr = fmt.Errorf("umount %s: %w", mounted[i], ClassifyMountError(string(out), exit))
 			}
 		}
 		return firstErr
@@ -138,8 +159,11 @@ func (n *NFS) Mount(ctx context.Context) (Mounts, func() error, error) {
 	return m, unmount, nil
 }
 
-// ClassifyMountError maps mount.nfs4 stderr onto a category, preserving the
-// original text so an unrecognised failure is still actionable.
+// ClassifyMountError maps mount.nfs4 or umount stderr onto a category,
+// preserving the original text so an unrecognised failure is still
+// actionable. It is shared by mount and unmount because both are just an
+// NFS operation against the same host, and both fail the same way when
+// that host vanishes mid-run.
 func ClassifyMountError(stderr string, exit int) error {
 	s := strings.ToLower(stderr)
 	trimmed := strings.TrimSpace(stderr)
@@ -158,5 +182,5 @@ func ClassifyMountError(stderr string, exit int) error {
 		strings.Contains(s, "operation not permitted"):
 		return fmt.Errorf("%w: %s", ErrPermission, trimmed)
 	}
-	return fmt.Errorf("mount failed (exit %d): %s", exit, trimmed)
+	return fmt.Errorf("nfs operation failed (exit %d): %s", exit, trimmed)
 }

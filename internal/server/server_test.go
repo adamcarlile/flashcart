@@ -423,6 +423,43 @@ func TestIndexCarriesFakeBanner(t *testing.T) {
 	}
 }
 
+// MINOR 9: the product's whole thesis is "works with no network," so the
+// embedded UI must never request an external font (or anything else): in a
+// car, that is a page load that starts with a failing DNS lookup.
+func TestIndexMakesNoExternalRequests(t *testing.T) {
+	b, err := fs.ReadFile(assets.FS, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(b)
+	for _, want := range []string{"fonts.googleapis.com", "fonts.gstatic.com", "http://", "https://"} {
+		if strings.Contains(html, want) {
+			t.Errorf("index.html references an external resource (%q), which cannot load with no network", want)
+		}
+	}
+}
+
+// MINOR 9: style.css must define its three type roles as system-font
+// stacks only, with no @font-face or @import that would pull in a remote
+// or embedded font binary.
+func TestStylesheetUsesOnlySystemFonts(t *testing.T) {
+	b, err := fs.ReadFile(assets.FS, "style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(b)
+	for _, want := range []string{"@font-face", "@import", "fonts.googleapis.com", "fonts.gstatic.com", "data:font", "data:application/font"} {
+		if strings.Contains(css, want) {
+			t.Errorf("style.css references %q, which requires network access or embeds a font binary", want)
+		}
+	}
+	for _, token := range []string{"--display:", "--ui:", "--mono:"} {
+		if !strings.Contains(css, token) {
+			t.Errorf("style.css no longer defines %s — the three type roles must stay distinct", token)
+		}
+	}
+}
+
 // Every colour must be reachable in the un-stamped theme state, where only
 // prefers-color-scheme applies. A token defined solely inside a media or
 // [data-theme] block renders one theme's text on the other theme's ground.
@@ -543,4 +580,147 @@ func TestShutdownCancelsInFlightSyncAndReleasesMounts(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("sync did not stop after Shutdown")
+}
+
+// IMPORTANT 4: nothing previously joined the goroutine handleSync spawns,
+// so a caller could only guess it had finished by polling, or — as cli.go
+// used to — by assuming its own timeout happened to be long enough. This
+// pins the fix directly: Wait must not return until the background sync,
+// including its deferred unmount, has genuinely finished, with no polling
+// involved.
+func TestWaitBlocksUntilBackgroundSyncGoroutineFinishes(t *testing.T) {
+	b, err := fake.New(fake.ScenarioSteady)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Delay = 100 * time.Millisecond
+
+	rp := &recordingProvider{inner: b, unmounted: make(chan struct{})}
+
+	cfg := &config.Config{
+		NAS: config.NAS{Host: "fake", Port: 2049, MountRoot: "/mnt"},
+		Trees: config.Trees{
+			Roms:  config.Tree{Export: "/e/roms", Local: t.TempDir()},
+			Bios:  config.Tree{Export: "/e/bios", Local: t.TempDir()},
+			Saves: config.Tree{Export: "/e/saves", Local: t.TempDir()},
+		},
+		SpaceMarginPercent: 10,
+	}
+	app := New(Options{
+		Cfg: cfg, Provider: rp, Runner: b, Free: b.FreeSpace,
+		Fake: b, Version: "test", Assets: testAssets(),
+	})
+
+	if w := do(t, app, http.MethodPost, "/api/sync", ""); w.Code != http.StatusAccepted {
+		t.Fatalf("sync status = %d", w.Code)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	app.Shutdown()
+	app.Wait()
+
+	// Wait already returned: the mount must have been released and busy
+	// must already be false, with no polling required to observe it.
+	select {
+	case <-rp.unmounted:
+	default:
+		t.Error("Wait returned before the deferred unmount ran")
+	}
+	w := do(t, app, http.MethodGet, "/api/status", "")
+	var got struct {
+		Busy bool `json:"busy"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Busy {
+		t.Error("Wait returned but the sync is still reported busy")
+	}
+}
+
+// IMPORTANT 4: with a browser's SSE connection left open, http.Server's own
+// Shutdown never force-closes an active handler — it only waits for one to
+// return on its own — so a live SSE stream previously blocked Shutdown for
+// its entire timeout and then returned context.DeadlineExceeded, turning a
+// completely normal shutdown into a process exit code of 1. Shutdown now
+// force-closes every connected SSE stream, so http.Server.Shutdown must
+// succeed well within a short timeout even with a client still attached.
+func TestShutdownReleasesSSEConnectionsSoServerShutdownSucceeds(t *testing.T) {
+	app, _ := newApp(t, fake.ScenarioSteady, t.TempDir())
+
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+
+	app.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Config.Shutdown(ctx); err != nil {
+		t.Fatalf("http.Server.Shutdown with a live SSE client attached: %v (want nil: a normal shutdown must not time out and must not exit non-zero)", err)
+	}
+}
+
+// IMPORTANT 5: a completed sync moves files on both sides, so the drift set
+// shown by the last /api/plan can describe paths that no longer exist, or
+// miss drift that now does. handleSync must clear confirmedDrift on
+// completion, the same way a successful delete already does, so a stale
+// pre-sync plan can never authorise a deletion against the post-sync world.
+func TestSyncClearsConfirmedDriftSoStalePlanCannotAuthoriseADeletion(t *testing.T) {
+	app, b := newApp(t, fake.ScenarioDrift, t.TempDir())
+	b.Delay = 0
+
+	pw := do(t, app, http.MethodPost, "/api/plan", "")
+	if pw.Code != http.StatusOK {
+		t.Fatalf("plan status = %d body = %s", pw.Code, pw.Body)
+	}
+	var planned plan.Plan
+	if err := json.Unmarshal(pw.Body.Bytes(), &planned); err != nil {
+		t.Fatal(err)
+	}
+	var item plan.DriftItem
+	for _, tp := range planned.Trees {
+		if len(tp.Drift) > 0 {
+			item = tp.Drift[0]
+			break
+		}
+	}
+	if item.Rel == "" {
+		t.Fatal("drift scenario produced no drift to confirm against")
+	}
+
+	if w := do(t, app, http.MethodPost, "/api/sync", ""); w.Code != http.StatusAccepted {
+		t.Fatalf("sync status = %d", w.Code)
+	}
+	// b.Delay is 0, but the goroutine still needs to actually run; poll
+	// status until busy clears rather than assuming a fixed sleep is enough.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w := do(t, app, http.MethodGet, "/api/status", "")
+		var got struct {
+			Busy bool `json:"busy"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &got)
+		if !got.Busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sync never completed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	body, _ := json.Marshal(map[string]any{"items": []plan.DriftItem{item}})
+	w := do(t, app, http.MethodPost, "/api/drift/confirm", string(body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("drift confirm after a sync status = %d body = %s, want 400: a completed sync must invalidate the pre-sync plan", w.Code, w.Body)
+	}
 }

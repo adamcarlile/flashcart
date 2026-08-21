@@ -82,3 +82,55 @@ func TestScriptValidatesPIDBeforeTrusting(t *testing.T) {
 		t.Error("script does not check process comm file")
 	}
 }
+
+// IMPORTANT 8: stop() waiting only 5s (the old 50 * 0.1s loop bound) is
+// shorter than flashcart's own 10s graceful shutdown budget, so a
+// perfectly normal slow shutdown gets mistaken for a hang: restart then
+// calls start() while the old process is still bound to the port, the new
+// process dies with EADDRINUSE, and the pidfile is left pointing at a PID
+// that means nothing useful. The wait must exceed 10s.
+func TestStopWaitExceedsGracefulShutdownBudget(t *testing.T) {
+	s := Script("/userdata/system/flashcart/flashcart", "/userdata/system/flashcart/flashcart.toml")
+	if strings.Contains(s, "-lt 50") {
+		t.Error("stop() still waits only ~5s (-lt 50 at 0.1s), shorter than the 10s graceful shutdown budget")
+	}
+	if !strings.Contains(s, "-lt 120") {
+		t.Error("stop() does not wait past the 10s graceful shutdown budget (want a loop bound of at least 120 at 0.1s)")
+	}
+}
+
+// IMPORTANT 8: a process that outlives the wait above is genuinely stuck,
+// not just slow, and must be forced rather than left to hang stop()
+// (and, transitively, restart) forever.
+func TestStopSendsSigkillIfStillRunningPastTheWait(t *testing.T) {
+	s := Script("/userdata/system/flashcart/flashcart", "/userdata/system/flashcart/flashcart.toml")
+	if !strings.Contains(s, "kill -9") {
+		t.Error("stop() never sends SIGKILL to a process that outlives the wait")
+	}
+}
+
+// IMPORTANT 8: the pidfile must not be removed until the process is
+// confirmed gone, or restart's start() sees "not running" and launches a
+// second instance while the first might still be shutting down.
+func TestStopOnlyRemovesPidfileOnceProcessIsConfirmedGone(t *testing.T) {
+	s := Script("/userdata/system/flashcart/flashcart", "/userdata/system/flashcart/flashcart.toml")
+	if strings.Contains(s, "done\n    rm -f \"$PIDFILE\"") {
+		t.Error("stop() removes the pidfile unconditionally after the wait loop, not gated on the process actually being gone")
+	}
+	if !strings.Contains(s, `kill -0 "$pid" 2>/dev/null || rm -f "$PIDFILE"`) {
+		t.Error("stop() must only remove the pidfile once kill -0 confirms the process is gone")
+	}
+}
+
+// MINOR 9: the service script must pin rsync's path rather than leaving
+// flashcart to a bare PATH lookup in whatever (possibly minimal)
+// environment batocera-services provides at boot.
+func TestScriptPinsRsyncPath(t *testing.T) {
+	s := Script("/userdata/system/flashcart/flashcart", "/userdata/system/flashcart/flashcart.toml")
+	if !strings.Contains(s, RsyncPath) {
+		t.Errorf("script does not pin rsync to %q", RsyncPath)
+	}
+	if !strings.Contains(s, "--rsync=") {
+		t.Error("script does not pass --rsync to the flashcart binary")
+	}
+}

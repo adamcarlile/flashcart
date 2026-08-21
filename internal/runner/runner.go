@@ -26,13 +26,19 @@ type Result struct {
 	// Deletions are paths present on the destination but absent from the
 	// source. They are reported, never acted upon by this package.
 	Deletions []string
+	// Warning is set when a real run completed under a tolerated non-fatal
+	// rsync exit code (23 or 24: some files could not be transferred, or
+	// vanished before they could be) rather than a hard failure. The pass
+	// is still considered to have succeeded; Warning carries what rsync
+	// reported so it reaches the user instead of being swallowed. Empty on
+	// a clean run.
+	Warning string
 }
 
 // Event is a progress update emitted during a real run.
 type Event struct {
 	PassID  string
 	Percent int
-	Message string
 }
 
 // Runner executes passes.

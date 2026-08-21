@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>flashcart</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=JetBrains+Mono:wght@400;500;700&family=Public+Sans:wght@400;500;600&display=swap">
+<!-- No external font requests: the product's whole thesis is "works with
+     no network," and a car is where every page load would otherwise start
+     with a failing DNS lookup. Type roles are system-font stacks defined
+     in style.css's --display/--ui/--mono variables. -->
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>

@@ -132,9 +132,9 @@ func TestMountHappyPath(t *testing.T) {
 	}
 
 	var unmountCalls []string
-	n.runUnmount = func(target string) error {
+	n.runUnmount = func(ctx context.Context, target string) ([]byte, error) {
 		unmountCalls = append(unmountCalls, target)
-		return nil
+		return nil, nil
 	}
 
 	ctx := context.Background()
@@ -190,9 +190,9 @@ func TestMountReverseOrderUnmount(t *testing.T) {
 	}
 
 	var unmountOrder []string
-	n.runUnmount = func(target string) error {
+	n.runUnmount = func(ctx context.Context, target string) ([]byte, error) {
 		unmountOrder = append(unmountOrder, "unmount:"+target)
-		return nil
+		return nil, nil
 	}
 
 	ctx := context.Background()
@@ -238,12 +238,12 @@ func TestMountPartialFailureWithCleanupError(t *testing.T) {
 	}
 
 	cleanupAttempt := 0
-	n.runUnmount = func(target string) error {
+	n.runUnmount = func(ctx context.Context, target string) ([]byte, error) {
 		cleanupAttempt++
 		if cleanupAttempt == 1 { // Fail on first unmount
-			return errors.New("device or resource busy")
+			return []byte("umount: device or resource busy"), errors.New("exit status 32")
 		}
-		return nil
+		return nil, nil
 	}
 
 	ctx := context.Background()
@@ -286,8 +286,8 @@ func TestMountBIOSReadOnly(t *testing.T) {
 		return nil, nil
 	}
 
-	n.runUnmount = func(target string) error {
-		return nil
+	n.runUnmount = func(ctx context.Context, target string) ([]byte, error) {
+		return nil, nil
 	}
 
 	ctx := context.Background()
@@ -311,5 +311,86 @@ func TestMountBIOSReadOnly(t *testing.T) {
 	savesOpts := mountOpts["saves"]
 	if contains(savesOpts, "ro,") {
 		t.Errorf("SAVES mount options should not start with 'ro,', got: %q", savesOpts)
+	}
+}
+
+// IMPORTANT 7: a hung umount previously blocked the deferred unmount
+// forever, which blocks the caller's release of the single-flight lock,
+// locking Plan and Sync out until restart. This pins that unmount is now
+// bounded by its own timeout rather than the caller's context (unmount
+// runs deferred, including after that context has just been cancelled on
+// shutdown, so tying it to that context would fail it instantly instead of
+// giving it a chance to actually run).
+func TestUnmountIsBoundedEvenWithACancelledCallerContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := cfgWith("127.0.0.1", 2049)
+	cfg.NAS.MountRoot = tmpDir
+	n := NewNFS(cfg)
+
+	n.runMount = func(ctx context.Context, opts, src, target string) ([]byte, error) {
+		return nil, nil
+	}
+
+	called := false
+	n.runUnmount = func(ctx context.Context, target string) ([]byte, error) {
+		called = true
+		// Checked DURING the call, before this function's own deferred
+		// cancel() has a chance to run: a context derived from the
+		// caller's already-cancelled context would report Err() != nil
+		// right here, whereas unmount's own bounded, freshly-started
+		// timeout context must not.
+		if err := ctx.Err(); err != nil {
+			t.Errorf("runUnmount's context was already done: %v (it must not be derived from the caller's cancelled context)", err)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("runUnmount was called with a context that carries no deadline")
+		}
+		return nil, nil
+	}
+
+	// The context Mount() is called with is cancelled before unmount ever
+	// runs, mirroring a real shutdown: Shutdown cancels a.ctx, and only
+	// then does the deferred unmount fire.
+	callerCtx, cancel := context.WithCancel(context.Background())
+	_, unmountFn, err := n.Mount(callerCtx)
+	if err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	cancel()
+
+	if err := unmountFn(); err != nil {
+		t.Fatalf("unmount failed against an already-cancelled caller context: %v", err)
+	}
+	if !called {
+		t.Fatal("runUnmount was never called")
+	}
+}
+
+// IMPORTANT 7: unmount failures are classified the same way mount
+// failures are, rather than surfacing a bare, unexplained exit status.
+func TestUnmountFailureIsClassified(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := cfgWith("127.0.0.1", 2049)
+	cfg.NAS.MountRoot = tmpDir
+	n := NewNFS(cfg)
+
+	n.runMount = func(ctx context.Context, opts, src, target string) ([]byte, error) {
+		return nil, nil
+	}
+	n.runUnmount = func(ctx context.Context, target string) ([]byte, error) {
+		return []byte("umount.nfs4: Connection timed out"), errors.New("exit status 32")
+	}
+
+	_, unmountFn, err := n.Mount(context.Background())
+	if err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+
+	err = unmountFn()
+	if err == nil {
+		t.Fatal("unmount succeeded despite runUnmount reporting a failure")
+	}
+	if !errors.Is(err, ErrUnreachable) {
+		t.Errorf("unmount error = %v, want it classified as ErrUnreachable", err)
 	}
 }

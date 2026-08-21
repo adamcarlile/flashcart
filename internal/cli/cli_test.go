@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-
 // reportRestart must fail the overall update, not just log a warning, when
 // a restart was attempted and failed: the operator asked for an update and
 // the new binary is staged but never started running.

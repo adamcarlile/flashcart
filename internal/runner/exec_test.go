@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,11 +19,11 @@ import (
 // correctly, including CRLF pairs which must not produce empty tokens.
 func TestScanLinesOrCR(t *testing.T) {
 	cases := map[string][]string{
-		"abc\r\ndef\r\n":   {"abc", "def"},
-		"a\rb\rc":          {"a", "b", "c"},
-		"x\ny\n":           {"x", "y"},
-		"no-terminator":    {"no-terminator"},
-		"":                 {},
+		"abc\r\ndef\r\n": {"abc", "def"},
+		"a\rb\rc":        {"a", "b", "c"},
+		"x\ny\n":         {"x", "y"},
+		"no-terminator":  {"no-terminator"},
+		"":               {},
 	}
 
 	for input, want := range cases {
@@ -73,9 +74,9 @@ func TestExecDryRunAndRun(t *testing.T) {
 	}
 
 	testFiles := map[string][]byte{
-		"file1.txt":              oneMB,
-		"file2.bin":              oneMB,
-		"Weird | Name.zip":       oneMB,
+		"file1.txt":               oneMB,
+		"file2.bin":               oneMB,
+		"Weird | Name.zip":        oneMB,
 		"Title, Author & More.md": oneMB,
 	}
 
@@ -101,6 +102,10 @@ func TestExecDryRunAndRun(t *testing.T) {
 		Src:     srcDir + "/",
 		Dst:     dstDir + "/",
 		Filters: []string{}, // No filters for test simplicity.
+		// This test wants to see a deletion reported, so the pass must
+		// run with its ownership grain: DryRunArgs only carries --delete
+		// when it does (CRITICAL 2).
+		WithGrain: true,
 	}
 
 	exec := NewExec("rsync")
@@ -205,5 +210,79 @@ checkEvents:
 		if ev.Percent < 0 || ev.Percent > 100 {
 			t.Errorf("invalid progress percent: %d", ev.Percent)
 		}
+	}
+}
+
+// fakeBinary writes a tiny shell script standing in for rsync, so a test
+// can force an exact exit code without needing rsync itself to actually
+// fail that way. Skipped if /bin/sh is unavailable.
+func fakeBinary(t *testing.T, exitCode int, stderr string) string {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no /bin/sh available to build a fake rsync binary")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-rsync")
+	script := fmt.Sprintf("#!/bin/sh\necho %q 1>&2\nexit %d\n", stderr, exitCode)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// IMPORTANT 6: exit 23 ("some files could not be transferred") is routine
+// on a live, half-million-file tree — the spec's own accepted risk of
+// EmulationStation rewriting gamelist.xml mid-push is exactly this case —
+// so it must be tolerated as partial success rather than aborting the run.
+func TestRunTreatsExit23AsPartialSuccess(t *testing.T) {
+	bin := fakeBinary(t, 23, "rsync: some files could not be transferred")
+	p := pass.Pass{ID: "test-pass", Src: "/src/", Dst: "/dst/"}
+
+	res, err := NewExec(bin).Run(context.Background(), p, make(chan Event, 8))
+	if err != nil {
+		t.Fatalf("Run returned an error for a tolerated exit 23: %v", err)
+	}
+	if res.Warning == "" {
+		t.Error("Run did not surface a warning for exit 23")
+	}
+	if !strings.Contains(res.Warning, "23") {
+		t.Errorf("Warning = %q, want it to mention exit 23", res.Warning)
+	}
+}
+
+// IMPORTANT 6: exit 24 ("some files vanished before they could be
+// transferred") is the same accepted-risk case and must be tolerated too.
+func TestRunTreatsExit24AsPartialSuccess(t *testing.T) {
+	bin := fakeBinary(t, 24, "rsync: some files vanished before they could be transferred")
+	p := pass.Pass{ID: "test-pass", Src: "/src/", Dst: "/dst/"}
+
+	res, err := NewExec(bin).Run(context.Background(), p, make(chan Event, 8))
+	if err != nil {
+		t.Fatalf("Run returned an error for a tolerated exit 24: %v", err)
+	}
+	if res.Warning == "" {
+		t.Error("Run did not surface a warning for exit 24")
+	}
+	if !strings.Contains(res.Warning, "24") {
+		t.Errorf("Warning = %q, want it to mention exit 24", res.Warning)
+	}
+}
+
+// IMPORTANT 6: no other exit code is tolerated — only 23 and 24 are the
+// spec's accepted risk. Something else (e.g. 1, a general error) must
+// still be fatal.
+func TestRunStillFailsOnUntoleratedExitCode(t *testing.T) {
+	bin := fakeBinary(t, 1, "rsync: syntax or usage error")
+	p := pass.Pass{ID: "test-pass", Src: "/src/", Dst: "/dst/"}
+
+	res, err := NewExec(bin).Run(context.Background(), p, make(chan Event, 8))
+	if err == nil {
+		t.Fatal("Run succeeded despite an untolerated non-zero exit code")
+	}
+	if res.Warning != "" {
+		t.Errorf("Run set a Warning on a hard failure: %q", res.Warning)
+	}
+	if !strings.Contains(err.Error(), "syntax or usage error") {
+		t.Errorf("error does not carry stderr: %v", err)
 	}
 }
