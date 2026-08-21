@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Go module path is `github.com/adamcarlile/flashcart`. Go 1.22 minimum.
+- Go module path is `github.com/adamcarlile/flashcart`. **Go 1.25 minimum** — `internal/drift` uses `os.Root`/`(*os.Root).RemoveAll` for kernel-enforced containment (see Task 10).
 - Built with `CGO_ENABLED=0`. The target is buildroot-based Batocera v42 and the binary must be static.
 - **No shell interpolation anywhere.** Every external command goes through `exec.Command` with an argument slice. Library filenames contain spaces, ampersands, apostrophes, commas and brackets, for example `Adventures of Batman & Robin, The (USA).zip`.
 - **`--delete` may only ever appear on an rsync invocation that also carries `-n`.** It is used solely to enumerate what would be deleted. Real transfers never carry it. This is enforced by construction and by test.
@@ -69,11 +69,11 @@ go get github.com/BurntSushi/toml@latest
 ```
 
 `go mod init` stamps the local toolchain's version into `go.mod`. CI pins Go
-1.22, so pin the module to match, and confirm it:
+1.25, so pin the module to match, and confirm it:
 
 ```bash
-go mod edit -go=1.22
-grep '^go ' go.mod    # must read: go 1.22
+go mod edit -go=1.25
+grep '^go ' go.mod    # must read: go 1.25
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -6044,7 +6044,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
       # The pass package runs real rsync to prove the filters agree with the
       # classifier, so it must be installed.
       - run: sudo apt-get update && sudo apt-get install -y rsync
@@ -6072,7 +6072,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
