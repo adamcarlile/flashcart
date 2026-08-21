@@ -101,5 +101,7 @@ prove the filter rules agree with `paths.Classify`.
 
 ## Docs
 
+- [Cutover runbook](docs/runbook.md) — what was done to the real box, what
+  was observed, and how to undo it
 - [Design spec](docs/superpowers/specs/2026-08-20-flashcart-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-08-20-flashcart.md)
